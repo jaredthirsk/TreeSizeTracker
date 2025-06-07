@@ -1,12 +1,15 @@
 @page "/folder-config"
-@rendermode InteractiveServer
 @using TreeSizeTracker.Models
 @using TreeSizeTracker.Services
 @inject ConfigurationService ConfigService
 @inject FileScannerService ScannerService
 @inject PartitionService PartitionService
+@inject ReportingService ReportingService
+@inject DatabaseCleanupService CleanupService
 @inject ISnackbar Snackbar
 @inject ILogger<FolderConfig> Logger
+@rendermode InteractiveServer
+@implements IDisposable
 
 <PageTitle>Folder Configuration</PageTitle>
 
@@ -273,6 +276,44 @@
                             <MudText>Scan This Partition</MudText>
                         }
                     </MudButton>
+                    
+                    @if (isScanning && scanProgress != null)
+                    {
+                        <MudPaper Class="mt-3 pa-3" Elevation="0" Style="background-color: var(--mud-palette-background-grey);">
+                            <MudText Typo="Typo.body2">
+                                <strong>Directories scanned:</strong> @scanProgress.DirectoriesScanned
+                            </MudText>
+                            <MudText Typo="Typo.body2" Class="mt-1">
+                                <strong>Elapsed time:</strong> @scanProgress.ElapsedTime.ToString(@"mm\:ss")
+                            </MudText>
+                            <MudText Typo="Typo.caption" Class="mt-1 text-truncate">
+                                <strong>Current:</strong> @scanProgress.CurrentDirectory
+                            </MudText>
+                        </MudPaper>
+                    }
+                    
+                    <MudDivider Class="my-3" />
+                    
+                    <MudButton Variant="Variant.Outlined" 
+                             Color="Color.Warning" 
+                             StartIcon="@Icons.Material.Filled.CleaningServices"
+                             OnClick="RunDatabaseCleanup"
+                             Disabled="@(isCleaning || isScanning)"
+                             FullWidth="true">
+                        @if (isCleaning)
+                        {
+                            <MudProgressCircular Class="ms-n1" Size="Size.Small" Indeterminate="true" />
+                            <MudText Class="ms-2">Cleaning Database...</MudText>
+                        }
+                        else
+                        {
+                            <MudText>Clean Up Database</MudText>
+                        }
+                    </MudButton>
+                    
+                    <MudText Typo="Typo.caption" Class="mt-2 text-muted">
+                        Removes entries beyond configured depth limits to reduce database size
+                    </MudText>
                 </MudCardContent>
             </MudCard>
         </MudItem>
@@ -382,6 +423,9 @@ else
     private bool newInclusionForce = true;
     private string newInclusionDescription = "";
     private bool isScanning = false;
+    private bool isCleaning = false;
+    private System.Threading.Timer? progressTimer;
+    private ScanProgress? scanProgress;
 
     protected override async Task OnInitializedAsync()
     {
@@ -541,10 +585,28 @@ else
     {
         isScanning = true;
         
+        // Start progress timer
+        progressTimer = new System.Threading.Timer(async _ =>
+        {
+            scanProgress = ScannerService.CurrentProgress;
+            await InvokeAsync(StateHasChanged);
+        }, null, TimeSpan.Zero, TimeSpan.FromMilliseconds(500));
+        
         try
         {
             var results = await ScannerService.PerformScanAsync(selectedPartition);
-            Snackbar.Add($"Scan completed successfully. Scanned {results.Count} folders.", Severity.Success);
+            
+            // Generate reports after scan
+            var diffs = await ScannerService.GetLatestDiffsAsync();
+            if (diffs.Any())
+            {
+                await ReportingService.GenerateReportsAsync(diffs);
+                Snackbar.Add($"Scan completed successfully. Scanned {results.Count} folders and generated reports.", Severity.Success);
+            }
+            else
+            {
+                Snackbar.Add($"Scan completed successfully. Scanned {results.Count} folders (no previous scan to compare).", Severity.Success);
+            }
         }
         catch (Exception ex)
         {
@@ -554,6 +616,9 @@ else
         finally
         {
             isScanning = false;
+            progressTimer?.Dispose();
+            progressTimer = null;
+            scanProgress = null;
             StateHasChanged();
         }
     }
@@ -578,5 +643,52 @@ else
         if (percentage >= 90) return Color.Error;
         if (percentage >= 75) return Color.Warning;
         return Color.Success;
+    }
+    
+    private async Task RunDatabaseCleanup()
+    {
+        isCleaning = true;
+        
+        try
+        {
+            var result = await CleanupService.CleanupDatabaseAsync(selectedPartition);
+            
+            if (result.TotalEntriesRemoved > 0)
+            {
+                Snackbar.Add($"Database cleanup completed. Removed {result.TotalEntriesRemoved} entries.", Severity.Success);
+                
+                // Show details if not too many
+                if (result.EntriesRemovedByPath.Count <= 10)
+                {
+                    foreach (var path in result.EntriesRemovedByPath)
+                    {
+                        Snackbar.Add($"Removed: {path}", Severity.Info);
+                    }
+                }
+                else
+                {
+                    Snackbar.Add($"Removed entries from {result.EntriesRemovedByPath.Count} paths", Severity.Info);
+                }
+            }
+            else
+            {
+                Snackbar.Add("No entries to clean up. Database is already optimized for current depth settings.", Severity.Info);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error during database cleanup");
+            Snackbar.Add($"Error during cleanup: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            isCleaning = false;
+            StateHasChanged();
+        }
+    }
+    
+    public void Dispose()
+    {
+        progressTimer?.Dispose();
     }
 }

@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using TreeSizeTracker.Models;
 
 namespace TreeSizeTracker.Services;
@@ -25,16 +26,25 @@ public class FolderTreeService
                 .Where(i => i.IsEnabled)
                 .ToDictionary(i => Path.GetFullPath(i.Path), i => i.ScanDepth);
 
+            // Ensure partition path ends with directory separator for root drives
+            var rootPath = partitionPath;
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && 
+                partitionPath.Length == 2 && partitionPath[1] == ':')
+            {
+                // Windows drive letter without backslash (e.g., "C:" -> "C:\")
+                rootPath = partitionPath + Path.DirectorySeparatorChar;
+            }
+
             // Start with the partition root
-            if (Directory.Exists(partitionPath))
+            if (Directory.Exists(rootPath))
             {
                 var rootNode = new FolderTreeNode
                 {
-                    Path = partitionPath,
+                    Path = rootPath,
                     Name = partitionPath,
-                    HasChildren = await HasSubdirectoriesAsync(partitionPath),
-                    OverrideDepth = inclusionMap.ContainsKey(Path.GetFullPath(partitionPath)) 
-                        ? inclusionMap[Path.GetFullPath(partitionPath)] 
+                    HasChildren = await HasSubdirectoriesAsync(rootPath),
+                    OverrideDepth = inclusionMap.ContainsKey(Path.GetFullPath(rootPath)) 
+                        ? inclusionMap[Path.GetFullPath(rootPath)] 
                         : null
                 };
                 nodes.Add(rootNode);

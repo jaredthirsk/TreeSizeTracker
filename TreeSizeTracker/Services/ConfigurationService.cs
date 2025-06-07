@@ -96,9 +96,17 @@ public class ConfigurationService
         };
 
         // Add the partition itself as a root folder
+        // Ensure proper path format for Windows drives
+        var rootPath = partitionPath;
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && 
+            partitionPath.Length == 2 && partitionPath[1] == ':')
+        {
+            rootPath = partitionPath + Path.DirectorySeparatorChar;
+        }
+        
         config.RootFolders.Add(new RootFolder 
         { 
-            Path = partitionPath, 
+            Path = rootPath, 
             IsEnabled = true 
         });
 

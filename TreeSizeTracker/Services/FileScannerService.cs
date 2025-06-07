@@ -14,6 +14,7 @@ public class FileScannerService
     private List<InclusionOverride> _activeInclusions = new();
     private HashSet<string> _scannedPaths = new();
     private Dictionary<string, int> _inclusionDepthOverrides = new();
+    private ScanProgress _currentProgress = new();
 
     public FileScannerService(
         TreeSizeDbContext dbContext, 
@@ -25,8 +26,19 @@ public class FileScannerService
         _logger = logger;
     }
 
+    public ScanProgress CurrentProgress => _currentProgress;
+
     public async Task<List<FolderSizeData>> PerformScanAsync(string? partitionPath = null)
     {
+        // Reset progress
+        _currentProgress = new ScanProgress
+        {
+            StartTime = DateTime.UtcNow,
+            IsScanning = true,
+            CurrentPartition = partitionPath,
+            DirectoriesScanned = 0
+        };
+
         var globalConfig = _configService.GetGlobalConfiguration();
         var scanResults = new List<FolderSizeData>();
         var scanTime = DateTime.UtcNow;
@@ -69,12 +81,16 @@ public class FileScannerService
             await _dbContext.SaveChangesAsync();
         }
 
+        // Mark scanning as complete
+        _currentProgress.IsScanning = false;
+
         return scanResults;
     }
 
     private async Task<List<FolderSizeData>> ScanPartitionAsync(ScanConfiguration configuration, DateTime scanTime)
     {
         var scanResults = new List<FolderSizeData>();
+        const int batchSize = 1000; // Save to database every 1000 records
         
         // Clear the scanned paths set for this scan
         _scannedPaths.Clear();
@@ -108,26 +124,49 @@ public class FileScannerService
                 }
 
                 var maxDepth = rootFolder.MaxDepth ?? configuration.DefaultScanDepth;
-                // Safety limit to prevent excessive recursion
-                if (maxDepth == 0 || maxDepth > 100)
+                
+                // Check if there's an inclusion override for this root folder
+                var normalizedRootPath = Path.GetFullPath(rootFolder.Path);
+                if (_inclusionDepthOverrides.ContainsKey(normalizedRootPath))
+                {
+                    maxDepth = _inclusionDepthOverrides[normalizedRootPath];
+                    _logger.LogDebug("Using inclusion override depth {Depth} for root folder {Path}", maxDepth, rootFolder.Path);
+                }
+                
+                // Safety limit to prevent excessive recursion (but allow 0 for current directory only)
+                if (maxDepth > 100)
                 {
                     maxDepth = 100;
                     _logger.LogInformation("Limiting scan depth to 100 levels for safety");
                 }
                 var results = await ScanFolderRecursiveAsync(rootFolder.Path, scanTime, 0, maxDepth);
                 scanResults.AddRange(results);
+                
+                // Save batch if we've accumulated enough records
+                if (scanResults.Count >= batchSize)
+                {
+                    _dbContext.FolderSizes.AddRange(scanResults);
+                    await _dbContext.SaveChangesAsync();
+                    _logger.LogInformation("Saved batch of {Count} records", scanResults.Count);
+                    scanResults.Clear(); // Clear the list to free memory
+                    
+                    // Also periodically clear the scanned paths to avoid memory bloat
+                    if (_scannedPaths.Count > 10000)
+                    {
+                        _logger.LogDebug("Clearing scanned paths cache to free memory");
+                        _scannedPaths.Clear();
+                    }
+                    
+                    // Hint to GC to collect freed memory
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                    GC.Collect();
+                }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error scanning root folder: {FolderPath}", rootFolder.Path);
             }
-        }
-
-        // Save all results to database
-        if (scanResults.Any())
-        {
-            _dbContext.FolderSizes.AddRange(scanResults);
-            await _dbContext.SaveChangesAsync();
         }
 
         return scanResults;
@@ -169,8 +208,17 @@ public class FileScannerService
 
         try
         {
-            // Get folder size
-            var folderSize = await GetFolderSizeAsync(path);
+            // Update progress
+            _currentProgress.DirectoriesScanned++;
+            _currentProgress.CurrentDirectory = path;
+
+            // Determine if we should aggregate subdirectories
+            bool shouldAggregate = currentDepth >= effectiveMaxDepth;
+            
+            // Get folder size - aggregate recursively if at depth limit
+            var folderSize = shouldAggregate 
+                ? await GetFolderSizeRecursiveAsync(path)
+                : await GetFolderSizeAsync(path);
             
             results.Add(new FolderSizeData
             {
@@ -183,7 +231,7 @@ public class FileScannerService
             });
 
             // Recursively scan subfolders if within depth limit
-            if (currentDepth < effectiveMaxDepth)
+            if (!shouldAggregate)
             {
                 try
                 {
@@ -329,6 +377,85 @@ public class FileScannerService
 
             return (totalSize, fileCount, subfolderCount);
         });
+    }
+
+    private async Task<(long sizeInBytes, int fileCount, int subfolderCount)> GetFolderSizeRecursiveAsync(string path)
+    {
+        return await Task.Run(() =>
+        {
+            // Always use manual recursion to avoid loading all file paths into memory
+            return GetFolderSizeRecursiveManual(path);
+        });
+    }
+
+    private (long sizeInBytes, int fileCount, int subfolderCount) GetFolderSizeRecursiveManual(string path)
+    {
+        long totalSize = 0;
+        int fileCount = 0;
+        int subfolderCount = 0;
+        var dirsToProcess = new Stack<string>();
+        dirsToProcess.Push(path);
+
+        while (dirsToProcess.Count > 0)
+        {
+            var currentDir = dirsToProcess.Pop();
+            
+            try
+            {
+                // Process files in current directory
+                foreach (var file in Directory.GetFiles(currentDir))
+                {
+                    try
+                    {
+                        var fileInfo = new FileInfo(file);
+                        totalSize += fileInfo.Length;
+                        fileCount++;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Could not get size for file: {FilePath}", file);
+                    }
+                }
+
+                // Add subdirectories to process
+                if (currentDir == path)
+                {
+                    // Count immediate subdirectories for the root path
+                    var subdirs = Directory.GetDirectories(currentDir);
+                    subfolderCount = subdirs.Length;
+                    foreach (var subdir in subdirs)
+                    {
+                        var dirInfo = new DirectoryInfo(subdir);
+                        if ((dirInfo.Attributes & FileAttributes.ReparsePoint) == 0)
+                        {
+                            dirsToProcess.Push(subdir);
+                        }
+                    }
+                }
+                else
+                {
+                    // Just add subdirectories to process
+                    foreach (var subdir in Directory.GetDirectories(currentDir))
+                    {
+                        var dirInfo = new DirectoryInfo(subdir);
+                        if ((dirInfo.Attributes & FileAttributes.ReparsePoint) == 0)
+                        {
+                            dirsToProcess.Push(subdir);
+                        }
+                    }
+                }
+            }
+            catch (UnauthorizedAccessException)
+            {
+                _logger.LogDebug("Access denied to directory: {Directory}", currentDir);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Error processing directory: {Directory}", currentDir);
+            }
+        }
+
+        return (totalSize, fileCount, subfolderCount);
     }
 
     public async Task<List<FolderSizeDiff>> GetLatestDiffsAsync()

@@ -23,6 +23,7 @@ builder.Services.AddScoped<FileScannerService>();
 builder.Services.AddScoped<ReportingService>();
 builder.Services.AddScoped<PartitionService>();
 builder.Services.AddScoped<FolderTreeService>();
+builder.Services.AddScoped<DatabaseCleanupService>();
 builder.Services.AddHostedService<ScheduledScanService>();
 
 var app = builder.Build();

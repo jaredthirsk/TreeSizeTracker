@@ -409,3 +409,4 @@ FodyWeavers.xsd
 /TreeSizeTracker/treesize.db-shm
 /TreeSizeTracker/treesize.db-wal
 /TreeSizeTracker/scan-config.json
+/TreeSizeTracker/Reports

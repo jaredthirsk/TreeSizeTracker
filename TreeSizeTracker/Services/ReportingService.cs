@@ -35,7 +35,12 @@ public class ReportingService
         var csv = new StringBuilder();
         csv.AppendLine("Path,Previous Size (MB),Current Size (MB),Difference (MB),Percentage Change,Previous Scan Date,Current Scan Date");
 
-        foreach (var diff in diffs.OrderBy(d => d.Path))
+        // Filter out zero changes and sort by absolute difference descending
+        var significantDiffs = diffs
+            .Where(d => d.SizeDifference != 0)
+            .OrderByDescending(d => Math.Abs(d.SizeDifference));
+
+        foreach (var diff in significantDiffs)
         {
             csv.AppendLine($"\"{diff.Path}\"," +
                           $"{diff.PreviousSize / (1024.0 * 1024.0):F2}," +
@@ -60,6 +65,9 @@ public class ReportingService
         report.AppendLine(new string('=', 80));
         report.AppendLine();
 
+        // Filter out directories with no change
+        var changedDirs = diffs.Where(d => d.SizeDifference != 0).ToList();
+        
         // Summary section
         var totalPreviousSize = diffs.Sum(d => d.PreviousSize);
         var totalCurrentSize = diffs.Sum(d => d.CurrentSize);
@@ -71,10 +79,11 @@ public class ReportingService
         report.AppendLine($"Total Current Size:  {FormatBytes(totalCurrentSize)}");
         report.AppendLine($"Total Change:        {FormatBytes(Math.Abs(totalDifference))} " +
                          $"({(totalDifference >= 0 ? "+" : "-")}{Math.Abs(totalDifference / (double)totalPreviousSize * 100):F2}%)");
+        report.AppendLine($"Directories with changes: {changedDirs.Count} out of {diffs.Count} scanned");
         report.AppendLine();
 
         // Folders with significant changes (> 5% or > 100MB)
-        var significantChanges = diffs.Where(d => 
+        var significantChanges = changedDirs.Where(d => 
             Math.Abs(d.PercentageChange) > 5 || 
             Math.Abs(d.SizeDifference) > 100 * 1024 * 1024)
             .OrderByDescending(d => Math.Abs(d.SizeDifference))
@@ -96,11 +105,11 @@ public class ReportingService
             }
         }
 
-        // All folders detail
-        report.AppendLine("ALL FOLDERS");
+        // All folders with changes detail
+        report.AppendLine("ALL CHANGES (sorted by size difference)");
         report.AppendLine(new string('-', 40));
         
-        foreach (var diff in diffs.OrderBy(d => d.Path))
+        foreach (var diff in changedDirs.OrderByDescending(d => Math.Abs(d.SizeDifference)))
         {
             report.AppendLine($"{diff.Path}");
             report.AppendLine($"  {FormatBytes(diff.PreviousSize)} -> {FormatBytes(diff.CurrentSize)} " +

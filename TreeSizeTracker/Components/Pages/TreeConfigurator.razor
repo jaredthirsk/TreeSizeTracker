@@ -5,6 +5,7 @@
 @inject PartitionService PartitionService
 @inject ISnackbar Snackbar
 @inject ILogger<TreeConfigurator> Logger
+@rendermode InteractiveServer
 
 <PageTitle>Tree Configurator</PageTitle>
 
@@ -24,12 +25,12 @@ else
         <MudCardContent>
             <MudGrid>
                 <MudItem xs="12" md="6">
-                    <MudSelect T="string" @bind-Value="selectedPartition" Label="Select Partition/Drive" Variant="Variant.Outlined"
-                               @bind-Value:after="@(() => LoadTreeAsync())">
+                    <MudSelect T="string" Value="selectedPartition" Label="Select Partition/Drive" Variant="Variant.Outlined"
+                               ValueChanged="@(async (string value) => { selectedPartition = value; await LoadTreeAsync(); })">
                         @foreach (var partition in partitions)
                         {
                             <MudSelectItem Value="@partition.Path">
-                                @partition.Label - @FormatBytes(partition.UsedSpace) used of @FormatBytes(partition.TotalSize)
+                                @partition.Label - @FormatBytes(partition.TotalSize - partition.UsedSpace) free of @FormatBytes(partition.TotalSize)
                             </MudSelectItem>
                         }
                     </MudSelect>
