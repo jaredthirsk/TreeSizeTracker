@@ -404,3 +404,8 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+/.claude/settings.local.json
+/TreeSizeTracker/treesize.db
+/TreeSizeTracker/treesize.db-shm
+/TreeSizeTracker/treesize.db-wal
+/TreeSizeTracker/scan-config.json
