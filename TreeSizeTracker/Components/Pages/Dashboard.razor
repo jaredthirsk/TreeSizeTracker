@@ -1,0 +1,262 @@
+@page "/"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using TreeSizeTracker.Data
+@using TreeSizeTracker.Models
+@using TreeSizeTracker.Services
+@inject TreeSizeDbContext DbContext
+@inject FileScannerService ScannerService
+@inject ReportingService ReportingService
+@inject ILogger<Dashboard> Logger
+
+<PageTitle>Dashboard - Tree Size Tracker</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Dashboard</MudText>
+
+<MudGrid>
+    <MudItem xs="12" md="4">
+        <MudCard>
+            <MudCardContent>
+                <div class="d-flex align-center">
+                    <MudIcon Icon="@Icons.Material.Filled.Folder" Color="Color.Primary" Class="mr-3" />
+                    <div>
+                        <MudText Typo="Typo.body2">Total Folders Tracked</MudText>
+                        <MudText Typo="Typo.h5">@totalFolders</MudText>
+                    </div>
+                </div>
+            </MudCardContent>
+        </MudCard>
+    </MudItem>
+    
+    <MudItem xs="12" md="4">
+        <MudCard>
+            <MudCardContent>
+                <div class="d-flex align-center">
+                    <MudIcon Icon="@Icons.Material.Filled.Schedule" Color="Color.Secondary" Class="mr-3" />
+                    <div>
+                        <MudText Typo="Typo.body2">Last Scan</MudText>
+                        <MudText Typo="Typo.h6">@GetLastScanTime()</MudText>
+                    </div>
+                </div>
+            </MudCardContent>
+        </MudCard>
+    </MudItem>
+    
+    <MudItem xs="12" md="4">
+        <MudCard>
+            <MudCardContent>
+                <div class="d-flex align-center">
+                    <MudIcon Icon="@Icons.Material.Filled.Storage" Color="Color.Info" Class="mr-3" />
+                    <div>
+                        <MudText Typo="Typo.body2">Total Size Tracked</MudText>
+                        <MudText Typo="Typo.h5">@FormatBytes(totalSize)</MudText>
+                    </div>
+                </div>
+            </MudCardContent>
+        </MudCard>
+    </MudItem>
+</MudGrid>
+
+@if (recentDiffs != null && recentDiffs.Any())
+{
+    <MudCard Class="mt-4">
+        <MudCardContent>
+            <MudText Typo="Typo.h6" Class="mb-3">Recent Changes</MudText>
+            
+            <MudTable Items="@recentDiffs" Hover="true" Dense="true">
+                <HeaderContent>
+                    <MudTh>Folder</MudTh>
+                    <MudTh Style="text-align: right">Previous Size</MudTh>
+                    <MudTh Style="text-align: right">Current Size</MudTh>
+                    <MudTh Style="text-align: right">Change</MudTh>
+                    <MudTh Style="text-align: right">% Change</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Folder">
+                        <MudTooltip Text="@context.Path">
+                            <MudText>@GetDisplayPath(context.Path)</MudText>
+                        </MudTooltip>
+                    </MudTd>
+                    <MudTd DataLabel="Previous Size" Style="text-align: right">@FormatBytes(context.PreviousSize)</MudTd>
+                    <MudTd DataLabel="Current Size" Style="text-align: right">@FormatBytes(context.CurrentSize)</MudTd>
+                    <MudTd DataLabel="Change" Style="text-align: right">
+                        <MudChip T="string" Color="@GetChangeColor(context.SizeDifference)" Size="Size.Small">
+                            @if (context.SizeDifference > 0)
+                            {
+                                <MudIcon Icon="@Icons.Material.Filled.TrendingUp" Size="Size.Small" />
+                            }
+                            else if (context.SizeDifference < 0)
+                            {
+                                <MudIcon Icon="@Icons.Material.Filled.TrendingDown" Size="Size.Small" />
+                            }
+                            @FormatBytes(Math.Abs(context.SizeDifference))
+                        </MudChip>
+                    </MudTd>
+                    <MudTd DataLabel="% Change" Style="text-align: right">
+                        <MudText Color="@GetChangeColor(context.SizeDifference)">
+                            @context.PercentageChange.ToString("F2")%
+                        </MudText>
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        </MudCardContent>
+    </MudCard>
+}
+
+@if (largestFolders != null && largestFolders.Any())
+{
+    <MudCard Class="mt-4">
+        <MudCardContent>
+            <MudText Typo="Typo.h6" Class="mb-3">Largest Folders</MudText>
+            
+            <MudSimpleTable Hover="true" Dense="true">
+                <thead>
+                    <tr>
+                        <th>Folder</th>
+                        <th style="text-align: right">Size</th>
+                        <th style="width: 40%">Relative Size</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var folder in largestFolders)
+                    {
+                        <tr>
+                            <td>
+                                <MudTooltip Text="@folder.Path">
+                                    <MudText>@GetDisplayPath(folder.Path)</MudText>
+                                </MudTooltip>
+                            </td>
+                            <td style="text-align: right">@FormatBytes(folder.SizeInBytes)</td>
+                            <td>
+                                <MudProgressLinear Value="@GetRelativeSize(folder.SizeInBytes)" Color="Color.Primary" />
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+        </MudCardContent>
+    </MudCard>
+}
+
+@code {
+    private int totalFolders = 0;
+    private long totalSize = 0;
+    private DateTime? lastScanTime;
+    private List<FolderSizeDiff>? recentDiffs;
+    private List<FolderSizeData>? largestFolders;
+    private long maxFolderSize = 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDashboardData();
+    }
+
+    private async Task LoadDashboardData()
+    {
+        try
+        {
+            // Get total folders being tracked
+            var paths = await DbContext.FolderSizes
+                .Select(f => f.Path)
+                .Distinct()
+                .ToListAsync();
+            totalFolders = paths.Count;
+
+            // Get last scan time
+            lastScanTime = await DbContext.FolderSizes
+                .MaxAsync(f => (DateTime?)f.ScanDateTime);
+
+            if (lastScanTime.HasValue)
+            {
+                // Get total size from most recent scan
+                var latestScanData = await DbContext.FolderSizes
+                    .Where(f => f.ScanDateTime == lastScanTime.Value)
+                    .ToListAsync();
+                
+                totalSize = latestScanData.Sum(f => f.SizeInBytes);
+
+                // Get largest folders from most recent scan
+                largestFolders = latestScanData
+                    .OrderByDescending(f => f.SizeInBytes)
+                    .Take(10)
+                    .ToList();
+                
+                if (largestFolders.Any())
+                {
+                    maxFolderSize = largestFolders.Max(f => f.SizeInBytes);
+                }
+            }
+
+            // Get recent diffs
+            recentDiffs = await ScannerService.GetLatestDiffsAsync();
+            recentDiffs = recentDiffs
+                .Where(d => Math.Abs(d.PercentageChange) > 1 || Math.Abs(d.SizeDifference) > 10 * 1024 * 1024) // > 1% or > 10MB
+                .OrderByDescending(d => Math.Abs(d.SizeDifference))
+                .Take(10)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading dashboard data");
+        }
+    }
+
+    private string GetLastScanTime()
+    {
+        if (!lastScanTime.HasValue)
+            return "Never";
+
+        var timeSince = DateTime.UtcNow - lastScanTime.Value;
+        
+        if (timeSince.TotalMinutes < 1)
+            return "Just now";
+        if (timeSince.TotalHours < 1)
+            return $"{(int)timeSince.TotalMinutes} minutes ago";
+        if (timeSince.TotalDays < 1)
+            return $"{(int)timeSince.TotalHours} hours ago";
+        if (timeSince.TotalDays < 7)
+            return $"{(int)timeSince.TotalDays} days ago";
+        
+        return lastScanTime.Value.ToLocalTime().ToString("MMM dd, yyyy");
+    }
+
+    private string FormatBytes(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB", "TB" };
+        double len = bytes;
+        int order = 0;
+        
+        while (len >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            len = len / 1024;
+        }
+
+        return $"{len:F2} {sizes[order]}";
+    }
+
+    private string GetDisplayPath(string path)
+    {
+        var parts = path.Split(Path.DirectorySeparatorChar);
+        if (parts.Length > 3)
+        {
+            return $"...{Path.DirectorySeparatorChar}{string.Join(Path.DirectorySeparatorChar, parts.TakeLast(2))}";
+        }
+        return path;
+    }
+
+    private Color GetChangeColor(long sizeDifference)
+    {
+        if (sizeDifference > 0)
+            return Color.Error;
+        if (sizeDifference < 0)
+            return Color.Success;
+        return Color.Default;
+    }
+
+    private double GetRelativeSize(long size)
+    {
+        if (maxFolderSize == 0) return 0;
+        return (double)size / maxFolderSize * 100;
+    }
+}

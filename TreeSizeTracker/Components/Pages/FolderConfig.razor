@@ -1,0 +1,582 @@
+@page "/folder-config"
+@rendermode InteractiveServer
+@using TreeSizeTracker.Models
+@using TreeSizeTracker.Services
+@inject ConfigurationService ConfigService
+@inject FileScannerService ScannerService
+@inject PartitionService PartitionService
+@inject ISnackbar Snackbar
+@inject ILogger<FolderConfig> Logger
+
+<PageTitle>Folder Configuration</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Folder Configuration</MudText>
+
+@if (partitions != null && partitions.Any())
+{
+    <MudCard Class="mb-4">
+        <MudCardContent>
+            <MudGrid>
+                <MudItem xs="12" md="6">
+                    <MudSelect T="string" @bind-Value="selectedPartition" Label="Select Partition/Drive" Variant="Variant.Outlined"
+                               @bind-Value:after="@(() => OnPartitionChanged(selectedPartition))">
+                        @foreach (var partition in partitions)
+                        {
+                            <MudSelectItem Value="@partition.Path">
+                                <div class="d-flex align-center">
+                                    <MudIcon Icon="@Icons.Material.Filled.Storage" Class="mr-2" />
+                                    <div class="flex-grow-1">
+                                        <MudText>@partition.Label</MudText>
+                                        <MudText Typo="Typo.caption">
+                                            @FormatBytes(partition.UsedSpace) / @FormatBytes(partition.TotalSize) 
+                                            (@partition.UsagePercentage.ToString("F1")% used)
+                                        </MudText>
+                                    </div>
+                                </div>
+                            </MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    @if (!string.IsNullOrEmpty(selectedPartition))
+                    {
+                        var partition = partitions.FirstOrDefault(p => p.Path == selectedPartition);
+                        if (partition != null)
+                        {
+                            <MudGrid>
+                                <MudItem xs="12">
+                                    <MudProgressLinear Value="@partition.UsagePercentage" Color="@GetUsageColor(partition.UsagePercentage)" />
+                                </MudItem>
+                                <MudItem xs="6">
+                                    <MudText Typo="Typo.caption">File System: @partition.FileSystem</MudText>
+                                </MudItem>
+                                <MudItem xs="6" Class="text-right">
+                                    <MudText Typo="Typo.caption">Free: @FormatBytes(partition.AvailableSpace)</MudText>
+                                </MudItem>
+                            </MudGrid>
+                        }
+                    }
+                </MudItem>
+            </MudGrid>
+        </MudCardContent>
+    </MudCard>
+}
+
+@if (configuration != null && !string.IsNullOrEmpty(selectedPartition))
+{
+    <MudCard Class="mb-4">
+        <MudCardContent>
+            <MudGrid>
+                <MudItem xs="8">
+                    <MudText Typo="Typo.h6">Partition Settings</MudText>
+                </MudItem>
+                <MudItem xs="4" Class="text-right">
+                    <MudSwitch @bind-Value="configuration.IsEnabled" 
+                             Color="Color.Primary"
+                             Label="Enable scanning for this partition"
+                             @bind-Value:after="@(() => SaveConfiguration())" />
+                </MudItem>
+            </MudGrid>
+        </MudCardContent>
+    </MudCard>
+
+    <MudGrid>
+        <MudItem xs="12" md="4">
+            <MudCard>
+                <MudCardContent>
+                    <MudText Typo="Typo.h6" Class="mb-3">Root Folders to Scan</MudText>
+                    
+                    <MudTable Items="@configuration.RootFolders" Hover="true" Dense="true">
+                        <HeaderContent>
+                            <MudTh>Path</MudTh>
+                            <MudTh>Max Depth</MudTh>
+                            <MudTh>Enabled</MudTh>
+                            <MudTh>Actions</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd DataLabel="Path">@context.Path</MudTd>
+                            <MudTd DataLabel="Max Depth">@(context.MaxDepth?.ToString() ?? "Unlimited")</MudTd>
+                            <MudTd DataLabel="Enabled">
+                                <MudSwitch @bind-Value="context.IsEnabled" Color="Color.Primary" 
+                                          @bind-Value:after="@(() => SaveConfiguration())" />
+                            </MudTd>
+                            <MudTd DataLabel="Actions">
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" 
+                                             Color="Color.Error" 
+                                             Size="Size.Small"
+                                             OnClick="@(() => RemoveRootFolder(context))"
+                                             Disabled="@(configuration.RootFolders.Count == 1)" />
+                            </MudTd>
+                        </RowTemplate>
+                    </MudTable>
+
+                    <MudDivider Class="my-4" />
+                    
+                    <MudText Typo="Typo.h6" Class="mb-3">Add Root Folder</MudText>
+                    
+                    <MudGrid>
+                        <MudItem xs="12" sm="8">
+                            <MudTextField @bind-Value="newRootPath" 
+                                        Label="Path" 
+                                        Variant="Variant.Outlined"
+                                        HelperText="Root path to scan (relative to partition)" />
+                        </MudItem>
+                        <MudItem xs="12" sm="4" Class="d-flex align-end">
+                            <MudButton Variant="Variant.Filled" 
+                                     Color="Color.Primary" 
+                                     StartIcon="@Icons.Material.Filled.Add"
+                                     OnClick="AddRootFolder"
+                                     FullWidth="true">
+                                Add Root
+                            </MudButton>
+                        </MudItem>
+                    </MudGrid>
+                </MudCardContent>
+            </MudCard>
+
+            <MudCard Class="mt-4">
+                <MudCardContent>
+                    <MudText Typo="Typo.h6" Class="mb-3">Scan Settings</MudText>
+                    
+                    <MudNumericField @bind-Value="configuration.DefaultScanDepth" 
+                                   Label="Default Scan Depth" 
+                                   Variant="Variant.Outlined"
+                                   Min="0"
+                                   HelperText="Maximum folder depth to scan (0 = unlimited)"
+                                   OnBlur="@(() => SaveConfiguration())" />
+
+                    <MudDivider Class="my-4" />
+
+                    <MudText Typo="Typo.h6" Class="mb-3">Global Schedule Settings</MudText>
+                    
+                    <MudSwitch @bind-Value="globalConfig!.IsScheduledScanEnabled" 
+                             Color="Color.Primary"
+                             Label="Enable Scheduled Scans"
+                             Class="mt-3"
+                             @bind-Value:after="@(() => SaveGlobalConfiguration())" />
+                    
+                    <MudTextField @bind-Value="globalConfig.CronSchedule" 
+                                Label="Cron Schedule" 
+                                Variant="Variant.Outlined"
+                                Disabled="@(!globalConfig.IsScheduledScanEnabled)"
+                                HelperText="Cron expression for scheduling"
+                                Class="mt-3"
+                                OnBlur="@(() => SaveGlobalConfiguration())" />
+                    
+                    <MudText Typo="Typo.body2" Class="mt-2">
+                        <strong>Examples:</strong><br/>
+                        Daily at midnight: 0 0 * * *<br/>
+                        Every 6 hours: 0 */6 * * *<br/>
+                        Weekly on Sunday: 0 0 * * 0
+                    </MudText>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+
+        <MudItem xs="12" md="4">
+            <MudCard>
+                <MudCardContent>
+                    <MudText Typo="Typo.h6" Class="mb-3">Inclusion Overrides</MudText>
+                    <MudText Typo="Typo.body2" Class="mb-3">Specific folders with custom scan depth settings</MudText>
+                    
+                    <MudTable Items="@configuration.InclusionOverrides" Hover="true" Dense="true" FixedHeader="true" Height="300px">
+                        <HeaderContent>
+                            <MudTh>Path</MudTh>
+                            <MudTh>Depth</MudTh>
+                            <MudTh>Force</MudTh>
+                            <MudTh>Enabled</MudTh>
+                            <MudTh>Actions</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd DataLabel="Path">
+                                <MudTooltip Text="@context.Path">
+                                    <MudText Style="max-width: 120px; overflow: hidden; text-overflow: ellipsis;">
+                                        @context.Path
+                                    </MudText>
+                                </MudTooltip>
+                            </MudTd>
+                            <MudTd DataLabel="Depth">@context.ScanDepth</MudTd>
+                            <MudTd DataLabel="Force">
+                                <MudCheckBox @bind-Value="context.ForceInclude" Size="Size.Small" Disabled="true" />
+                            </MudTd>
+                            <MudTd DataLabel="Enabled">
+                                <MudSwitch @bind-Value="context.IsEnabled" Color="Color.Primary" Size="Size.Small"
+                                          @bind-Value:after="@(() => SaveConfiguration())" />
+                            </MudTd>
+                            <MudTd DataLabel="Actions">
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" 
+                                             Color="Color.Error" 
+                                             Size="Size.Small"
+                                             OnClick="@(() => RemoveInclusion(context))" />
+                            </MudTd>
+                        </RowTemplate>
+                    </MudTable>
+
+                    <MudDivider Class="my-4" />
+                    
+                    <MudText Typo="Typo.h6" Class="mb-3">Add Inclusion Override</MudText>
+                    
+                    <MudGrid>
+                        <MudItem xs="12">
+                            <MudTextField @bind-Value="newInclusionPath" 
+                                        Label="Path" 
+                                        Variant="Variant.Outlined"
+                                        HelperText="Full path to include with custom depth" />
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudNumericField @bind-Value="newInclusionDepth" 
+                                           Label="Scan Depth" 
+                                           Variant="Variant.Outlined"
+                                           Min="0"
+                                           Max="10" />
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudSwitch @bind-Value="newInclusionForce" 
+                                     Label="Force Include"
+                                     Color="Color.Primary" />
+                        </MudItem>
+                        <MudItem xs="12">
+                            <MudTextField @bind-Value="newInclusionDescription" 
+                                        Label="Description" 
+                                        Variant="Variant.Outlined" />
+                        </MudItem>
+                        <MudItem xs="12">
+                            <MudButton Variant="Variant.Filled" 
+                                     Color="Color.Primary" 
+                                     StartIcon="@Icons.Material.Filled.Add"
+                                     OnClick="AddInclusion"
+                                     FullWidth="true">
+                                Add Inclusion
+                            </MudButton>
+                        </MudItem>
+                    </MudGrid>
+                </MudCardContent>
+            </MudCard>
+
+            <MudCard Class="mt-4">
+                <MudCardContent>
+                    <MudText Typo="Typo.h6" Class="mb-3">Manual Actions</MudText>
+                    
+                    <MudButton Variant="Variant.Filled" 
+                             Color="Color.Success" 
+                             StartIcon="@Icons.Material.Filled.PlayArrow"
+                             OnClick="RunManualScan"
+                             Disabled="@(isScanning || !configuration.IsEnabled)"
+                             FullWidth="true">
+                        @if (isScanning)
+                        {
+                            <MudProgressCircular Class="ms-n1" Size="Size.Small" Indeterminate="true" />
+                            <MudText Class="ms-2">Scanning...</MudText>
+                        }
+                        else
+                        {
+                            <MudText>Scan This Partition</MudText>
+                        }
+                    </MudButton>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+
+        <MudItem xs="12" md="4">
+            <MudCard>
+                <MudCardContent>
+                    <MudText Typo="Typo.h6" Class="mb-3">Exclusion Rules</MudText>
+                    <MudText Typo="Typo.body2" Class="mb-3">Folders matching these rules will be excluded from scanning</MudText>
+                    
+                    <MudTable Items="@configuration.ExclusionRules" Hover="true" Dense="true" FixedHeader="true" Height="400px">
+                        <HeaderContent>
+                            <MudTh>Pattern</MudTh>
+                            <MudTh>Type</MudTh>
+                            <MudTh>Description</MudTh>
+                            <MudTh>Enabled</MudTh>
+                            <MudTh>Actions</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd DataLabel="Pattern">
+                                <MudTooltip Text="@context.Pattern">
+                                    <MudText Style="max-width: 150px; overflow: hidden; text-overflow: ellipsis;">
+                                        @context.Pattern
+                                    </MudText>
+                                </MudTooltip>
+                            </MudTd>
+                            <MudTd DataLabel="Type">@context.Type</MudTd>
+                            <MudTd DataLabel="Description">
+                                <MudText Typo="Typo.body2">@context.Description</MudText>
+                            </MudTd>
+                            <MudTd DataLabel="Enabled">
+                                <MudSwitch @bind-Value="context.IsEnabled" Color="Color.Primary" Size="Size.Small"
+                                          @bind-Value:after="@(() => SaveConfiguration())" />
+                            </MudTd>
+                            <MudTd DataLabel="Actions">
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" 
+                                             Color="Color.Error" 
+                                             Size="Size.Small"
+                                             OnClick="@(() => RemoveExclusion(context))" />
+                            </MudTd>
+                        </RowTemplate>
+                    </MudTable>
+
+                    <MudDivider Class="my-4" />
+                    
+                    <MudText Typo="Typo.h6" Class="mb-3">Add Exclusion Rule</MudText>
+                    
+                    <MudGrid>
+                        <MudItem xs="12">
+                            <MudTextField @bind-Value="newExclusionPattern" 
+                                        Label="Pattern" 
+                                        Variant="Variant.Outlined"
+                                        HelperText="Path, folder name, or pattern to exclude" />
+                        </MudItem>
+                        <MudItem xs="12" sm="6">
+                            <MudSelect @bind-Value="newExclusionType" 
+                                     Label="Type" 
+                                     Variant="Variant.Outlined">
+                                <MudSelectItem Value="ExclusionType.Path">Exact Path</MudSelectItem>
+                                <MudSelectItem Value="ExclusionType.PathPrefix">Path Prefix</MudSelectItem>
+                                <MudSelectItem Value="ExclusionType.FolderName">Folder Name</MudSelectItem>
+                                <MudSelectItem Value="ExclusionType.Wildcard">Wildcard</MudSelectItem>
+                                <MudSelectItem Value="ExclusionType.Regex">Regex</MudSelectItem>
+                            </MudSelect>
+                        </MudItem>
+                        <MudItem xs="12" sm="6">
+                            <MudTextField @bind-Value="newExclusionDescription" 
+                                        Label="Description" 
+                                        Variant="Variant.Outlined" />
+                        </MudItem>
+                        <MudItem xs="12">
+                            <MudButton Variant="Variant.Filled" 
+                                     Color="Color.Primary" 
+                                     StartIcon="@Icons.Material.Filled.Add"
+                                     OnClick="AddExclusion"
+                                     FullWidth="true">
+                                Add Exclusion
+                            </MudButton>
+                        </MudItem>
+                    </MudGrid>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+    </MudGrid>
+}
+else if (string.IsNullOrEmpty(selectedPartition))
+{
+    <MudAlert Severity="Severity.Info">Please select a partition/drive to configure.</MudAlert>
+}
+else
+{
+    <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+    <MudText>Loading configuration...</MudText>
+}
+
+@code {
+    private List<PartitionInfo>? partitions;
+    private string selectedPartition = "";
+    private ScanConfiguration? configuration;
+    private GlobalConfiguration? globalConfig;
+    private string newRootPath = "";
+    private string newExclusionPattern = "";
+    private ExclusionType newExclusionType = ExclusionType.FolderName;
+    private string newExclusionDescription = "";
+    private string newInclusionPath = "";
+    private int newInclusionDepth = 1;
+    private bool newInclusionForce = true;
+    private string newInclusionDescription = "";
+    private bool isScanning = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        globalConfig = ConfigService.GetGlobalConfiguration();
+        partitions = await PartitionService.GetAvailablePartitionsAsync();
+        
+        if (partitions.Any())
+        {
+            selectedPartition = partitions.First().Path;
+            configuration = ConfigService.GetPartitionConfiguration(selectedPartition);
+        }
+    }
+
+    private Task OnPartitionChanged(string newPartition)
+    {
+        selectedPartition = newPartition;
+        configuration = ConfigService.GetPartitionConfiguration(selectedPartition);
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private async Task SaveConfiguration()
+    {
+        if (configuration == null) return;
+        
+        try
+        {
+            await ConfigService.SavePartitionConfigurationAsync(selectedPartition, configuration);
+            Snackbar.Add("Configuration saved successfully", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error saving configuration");
+            Snackbar.Add($"Error saving configuration: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task SaveGlobalConfiguration()
+    {
+        if (globalConfig == null) return;
+        
+        try
+        {
+            await ConfigService.SaveConfigurationAsync();
+            Snackbar.Add("Global configuration saved successfully", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error saving global configuration");
+            Snackbar.Add($"Error saving configuration: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task AddRootFolder()
+    {
+        if (string.IsNullOrWhiteSpace(newRootPath))
+        {
+            Snackbar.Add("Please enter a root path", Severity.Warning);
+            return;
+        }
+
+        var fullPath = Path.Combine(selectedPartition, newRootPath.TrimStart('/', '\\'));
+        
+        if (!Directory.Exists(fullPath))
+        {
+            Snackbar.Add("The specified path does not exist", Severity.Warning);
+            return;
+        }
+
+        configuration!.RootFolders.Add(new RootFolder
+        {
+            Path = fullPath,
+            IsEnabled = true
+        });
+
+        await SaveConfiguration();
+        newRootPath = "";
+    }
+
+    private async Task RemoveRootFolder(RootFolder folder)
+    {
+        configuration!.RootFolders.Remove(folder);
+        await SaveConfiguration();
+    }
+
+    private async Task AddExclusion()
+    {
+        if (string.IsNullOrWhiteSpace(newExclusionPattern))
+        {
+            Snackbar.Add("Please enter an exclusion pattern", Severity.Warning);
+            return;
+        }
+
+        var exclusion = new ExclusionRule
+        {
+            Pattern = newExclusionPattern,
+            Type = newExclusionType,
+            Description = newExclusionDescription,
+            IsEnabled = true
+        };
+
+        configuration!.ExclusionRules.Add(exclusion);
+        await SaveConfiguration();
+
+        // Clear form
+        newExclusionPattern = "";
+        newExclusionDescription = "";
+        newExclusionType = ExclusionType.FolderName;
+    }
+
+    private async Task RemoveExclusion(ExclusionRule rule)
+    {
+        configuration!.ExclusionRules.Remove(rule);
+        await SaveConfiguration();
+    }
+
+    private async Task AddInclusion()
+    {
+        if (string.IsNullOrWhiteSpace(newInclusionPath))
+        {
+            Snackbar.Add("Please enter an inclusion path", Severity.Warning);
+            return;
+        }
+
+        if (!Directory.Exists(newInclusionPath))
+        {
+            Snackbar.Add("The specified path does not exist", Severity.Warning);
+            return;
+        }
+
+        var inclusion = new InclusionOverride
+        {
+            Path = newInclusionPath,
+            ScanDepth = newInclusionDepth,
+            ForceInclude = newInclusionForce,
+            Description = newInclusionDescription,
+            IsEnabled = true
+        };
+
+        configuration!.InclusionOverrides.Add(inclusion);
+        await SaveConfiguration();
+
+        // Clear form
+        newInclusionPath = "";
+        newInclusionDepth = 1;
+        newInclusionForce = true;
+        newInclusionDescription = "";
+    }
+
+    private async Task RemoveInclusion(InclusionOverride inclusion)
+    {
+        configuration!.InclusionOverrides.Remove(inclusion);
+        await SaveConfiguration();
+    }
+
+    private async Task RunManualScan()
+    {
+        isScanning = true;
+        
+        try
+        {
+            var results = await ScannerService.PerformScanAsync(selectedPartition);
+            Snackbar.Add($"Scan completed successfully. Scanned {results.Count} folders.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error during manual scan");
+            Snackbar.Add($"Error during scan: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            isScanning = false;
+            StateHasChanged();
+        }
+    }
+
+    private string FormatBytes(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB", "TB" };
+        double len = bytes;
+        int order = 0;
+        
+        while (len >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            len = len / 1024;
+        }
+
+        return $"{len:F2} {sizes[order]}";
+    }
+
+    private Color GetUsageColor(double percentage)
+    {
+        if (percentage >= 90) return Color.Error;
+        if (percentage >= 75) return Color.Warning;
+        return Color.Success;
+    }
+}

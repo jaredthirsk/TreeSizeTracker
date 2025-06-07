@@ -1,0 +1,182 @@
+@page "/scan-history"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using TreeSizeTracker.Data
+@using TreeSizeTracker.Models
+@inject TreeSizeDbContext DbContext
+@inject ILogger<ScanHistory> Logger
+
+<PageTitle>Scan History - Tree Size Tracker</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Scan History</MudText>
+
+<MudCard>
+    <MudCardContent>
+        <MudGrid>
+            <MudItem xs="12" md="6">
+                <MudTextField @bind-Value="searchPath" 
+                            Label="Filter by Path" 
+                            Variant="Variant.Outlined"
+                            Adornment="Adornment.Start"
+                            AdornmentIcon="@Icons.Material.Filled.Search"
+                            OnKeyUp="@(async (e) => { if (e.Key == "Enter") await LoadScanHistory(); })" />
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudDatePicker @bind-Date="fromDate" 
+                             Label="From Date" 
+                             Variant="Variant.Outlined" />
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudDatePicker @bind-Date="toDate" 
+                             Label="To Date" 
+                             Variant="Variant.Outlined" />
+            </MudItem>
+        </MudGrid>
+        
+        <MudButton Variant="Variant.Filled" 
+                 Color="Color.Primary" 
+                 StartIcon="@Icons.Material.Filled.FilterList"
+                 OnClick="LoadScanHistory"
+                 Class="mt-3">
+            Apply Filters
+        </MudButton>
+    </MudCardContent>
+</MudCard>
+
+@if (isLoading)
+{
+    <MudProgressCircular Color="Color.Primary" Indeterminate="true" Class="mt-4" />
+}
+else if (scanHistory != null)
+{
+    <MudCard Class="mt-4">
+        <MudCardContent>
+            <MudTable Items="@scanHistory" 
+                    Hover="true" 
+                    Dense="true"
+                    FixedHeader="true"
+                    Height="600px"
+                    Virtualize="true">
+                <HeaderContent>
+                    <MudTh>Path</MudTh>
+                    <MudTh Style="text-align: right">Size</MudTh>
+                    <MudTh Style="text-align: right">Files</MudTh>
+                    <MudTh Style="text-align: right">Subfolders</MudTh>
+                    <MudTh>Scan Date</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Path">
+                        <MudTooltip Text="@context.Path">
+                            <MudText>@GetDisplayPath(context.Path)</MudText>
+                        </MudTooltip>
+                    </MudTd>
+                    <MudTd DataLabel="Size" Style="text-align: right">@FormatBytes(context.SizeInBytes)</MudTd>
+                    <MudTd DataLabel="Files" Style="text-align: right">@context.FileCount</MudTd>
+                    <MudTd DataLabel="Subfolders" Style="text-align: right">@context.SubfolderCount</MudTd>
+                    <MudTd DataLabel="Scan Date">@context.ScanDateTime.ToLocalTime().ToString("g")</MudTd>
+                </RowTemplate>
+                <PagerContent>
+                    <MudTablePager />
+                </PagerContent>
+            </MudTable>
+            
+            <MudText Typo="Typo.body2" Class="mt-2">
+                Total records: @totalRecords
+            </MudText>
+        </MudCardContent>
+    </MudCard>
+}
+
+@code {
+    private List<FolderSizeData>? scanHistory;
+    private string searchPath = "";
+    private DateTime? fromDate;
+    private DateTime? toDate;
+    private bool isLoading = false;
+    private int totalRecords = 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Set default date range (last 30 days)
+        toDate = DateTime.Today;
+        fromDate = DateTime.Today.AddDays(-30);
+        
+        await LoadScanHistory();
+    }
+
+    private async Task LoadScanHistory()
+    {
+        isLoading = true;
+        StateHasChanged();
+        
+        try
+        {
+            var query = DbContext.FolderSizes.AsQueryable();
+
+            // Apply path filter
+            if (!string.IsNullOrWhiteSpace(searchPath))
+            {
+                query = query.Where(f => f.Path.Contains(searchPath));
+            }
+
+            // Apply date filters
+            if (fromDate.HasValue)
+            {
+                var fromDateUtc = fromDate.Value.Date.ToUniversalTime();
+                query = query.Where(f => f.ScanDateTime >= fromDateUtc);
+            }
+
+            if (toDate.HasValue)
+            {
+                var toDateUtc = toDate.Value.Date.AddDays(1).ToUniversalTime();
+                query = query.Where(f => f.ScanDateTime < toDateUtc);
+            }
+
+            totalRecords = await query.CountAsync();
+            
+            scanHistory = await query
+                .OrderByDescending(f => f.ScanDateTime)
+                .ThenBy(f => f.Path)
+                .Take(1000) // Limit to prevent performance issues
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading scan history");
+            scanHistory = new List<FolderSizeData>();
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private string FormatBytes(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB", "TB" };
+        double len = bytes;
+        int order = 0;
+        
+        while (len >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            len = len / 1024;
+        }
+
+        return $"{len:F2} {sizes[order]}";
+    }
+
+    private string GetDisplayPath(string path)
+    {
+        if (path.Length > 50)
+        {
+            var parts = path.Split(Path.DirectorySeparatorChar);
+            if (parts.Length > 3)
+            {
+                return $"{parts[0]}{Path.DirectorySeparatorChar}...{Path.DirectorySeparatorChar}{string.Join(Path.DirectorySeparatorChar, parts.TakeLast(2))}";
+            }
+        }
+        return path;
+    }
+}

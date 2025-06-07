@@ -1,0 +1,74 @@
+@using TreeSizeTracker.Models
+
+<div class="tree-node">
+    <div class="tree-node-content">
+        <span class="tree-indent" style="width: @(Level * 20)px"></span>
+        
+        @if (Node.HasChildren)
+        {
+            <span class="tree-icon" @onclick="ToggleExpanded">
+                <MudIcon Icon="@(Node.IsExpanded ? Icons.Material.Filled.ExpandMore : Icons.Material.Filled.ChevronRight)" Size="Size.Small" />
+            </span>
+        }
+        else
+        {
+            <span class="tree-icon" style="visibility: hidden;">
+                <MudIcon Icon="@Icons.Material.Filled.ChevronRight" Size="Size.Small" />
+            </span>
+        }
+        
+        <MudIcon Icon="@Icons.Material.Filled.Folder" Color="Color.Warning" Size="Size.Small" Class="mr-2" />
+        
+        <span class="tree-label">@Node.DisplayName</span>
+        
+        @if (Node.IsLoading)
+        {
+            <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+        }
+        
+        <MudMenu Dense="true" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight">
+            <ActivatorContent>
+                <MudChip T="string" Size="Size.Small" 
+                       Color="@(Node.OverrideDepth == null ? Color.Default : Color.Primary)">
+                    @(Node.OverrideDepth?.ToString() ?? "Default")
+                </MudChip>
+            </ActivatorContent>
+            <ChildContent>
+                <MudMenuItem OnClick="@(() => OnDepthSelected(null))">Default</MudMenuItem>
+                <MudMenuItem OnClick="@(() => OnDepthSelected(0))">0 (This folder only)</MudMenuItem>
+                <MudMenuItem OnClick="@(() => OnDepthSelected(1))">1 level</MudMenuItem>
+                <MudMenuItem OnClick="@(() => OnDepthSelected(2))">2 levels</MudMenuItem>
+                <MudMenuItem OnClick="@(() => OnDepthSelected(3))">3 levels</MudMenuItem>
+                <MudMenuItem OnClick="@(() => OnDepthSelected(5))">5 levels</MudMenuItem>
+                <MudMenuItem OnClick="@(() => OnDepthSelected(10))">10 levels</MudMenuItem>
+            </ChildContent>
+        </MudMenu>
+    </div>
+    
+    @if (Node.IsExpanded && Node.Children.Any())
+    {
+        <div>
+            @foreach (var child in Node.Children)
+            {
+                <TreeNodeComponent Node="child" Level="@(Level + 1)" OnNodeClick="OnNodeClick" OnDepthChange="OnDepthChange" />
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public FolderTreeNode Node { get; set; } = null!;
+    [Parameter] public int Level { get; set; }
+    [Parameter] public EventCallback<FolderTreeNode> OnNodeClick { get; set; }
+    [Parameter] public EventCallback<(FolderTreeNode, int?)> OnDepthChange { get; set; }
+
+    private async Task ToggleExpanded()
+    {
+        await OnNodeClick.InvokeAsync(Node);
+    }
+
+    private async Task OnDepthSelected(int? depth)
+    {
+        await OnDepthChange.InvokeAsync((Node, depth));
+    }
+}

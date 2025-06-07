@@ -1,0 +1,252 @@
+@page "/tree-configurator"
+@using TreeSizeTracker.Services
+@using TreeSizeTracker.Models
+@inject FolderTreeService FolderTreeService
+@inject PartitionService PartitionService
+@inject ISnackbar Snackbar
+@inject ILogger<TreeConfigurator> Logger
+
+<PageTitle>Tree Configurator</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Tree Configurator</MudText>
+
+@if (partitions == null)
+{
+    <MudProgressCircular Indeterminate="true" />
+}
+else if (!partitions.Any())
+{
+    <MudAlert Severity="Severity.Warning">No partitions found on this system.</MudAlert>
+}
+else
+{
+    <MudCard Class="mb-4">
+        <MudCardContent>
+            <MudGrid>
+                <MudItem xs="12" md="6">
+                    <MudSelect T="string" @bind-Value="selectedPartition" Label="Select Partition/Drive" Variant="Variant.Outlined"
+                               @bind-Value:after="@(() => LoadTreeAsync())">
+                        @foreach (var partition in partitions)
+                        {
+                            <MudSelectItem Value="@partition.Path">
+                                @partition.Label - @FormatBytes(partition.UsedSpace) used of @FormatBytes(partition.TotalSize)
+                            </MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12" md="6" Class="d-flex align-center">
+                    <MudText Typo="Typo.body2">
+                        Configure scan depth for individual folders. Default means no override.
+                    </MudText>
+                </MudItem>
+            </MudGrid>
+        </MudCardContent>
+    </MudCard>
+
+    @if (!string.IsNullOrEmpty(selectedPartition))
+    {
+        <MudCard>
+            <MudCardContent>
+                <MudText Typo="Typo.h6" Class="mb-3">Folder Structure</MudText>
+                
+                @if (isLoading)
+                {
+                    <MudProgressLinear Indeterminate="true" />
+                }
+                else if (rootNodes != null && rootNodes.Any())
+                {
+                    <div class="folder-tree">
+                        @foreach (var node in rootNodes)
+                        {
+                            <TreeNodeComponent Node="@node" Level="0" OnNodeClick="OnNodeClick" OnDepthChange="OnDepthChange" />
+                        }
+                    </div>
+                    
+                    <MudText Typo="Typo.body2" Class="mt-4 mud-text-secondary">
+                        Click on a folder to expand it. Click on the depth chip to change the scan depth for that folder.
+                    </MudText>
+                }
+                else
+                {
+                    <MudText>No folders available.</MudText>
+                }
+            </MudCardContent>
+        </MudCard>
+
+        <MudCard Class="mt-4">
+            <MudCardContent>
+                <MudText Typo="Typo.h6" Class="mb-2">Depth Settings Guide</MudText>
+                <MudSimpleTable>
+                    <tbody>
+                        <tr>
+                            <td><MudChip T="string" Size="Size.Small">Default</MudChip></td>
+                            <td>Uses the global or parent folder depth setting</td>
+                        </tr>
+                        <tr>
+                            <td><MudChip T="string" Size="Size.Small" Color="Color.Primary">0</MudChip></td>
+                            <td>Scan only this folder (no subfolders)</td>
+                        </tr>
+                        <tr>
+                            <td><MudChip T="string" Size="Size.Small" Color="Color.Primary">1</MudChip></td>
+                            <td>Scan this folder and immediate subfolders</td>
+                        </tr>
+                        <tr>
+                            <td><MudChip T="string" Size="Size.Small" Color="Color.Primary">2</MudChip></td>
+                            <td>Scan this folder and two levels of subfolders</td>
+                        </tr>
+                        <tr>
+                            <td><MudChip T="string" Size="Size.Small" Color="Color.Primary">3+</MudChip></td>
+                            <td>Scan deeper levels as specified</td>
+                        </tr>
+                    </tbody>
+                </MudSimpleTable>
+            </MudCardContent>
+        </MudCard>
+    }
+}
+
+<style>
+    .folder-tree {
+        font-family: monospace;
+    }
+    
+    .tree-node {
+        margin: 2px 0;
+    }
+    
+    .tree-node-content {
+        display: flex;
+        align-items: center;
+        padding: 4px;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+    
+    .tree-node-content:hover {
+        background-color: var(--mud-palette-action-default-hover);
+    }
+    
+    .tree-indent {
+        display: inline-block;
+    }
+    
+    .tree-icon {
+        margin-right: 8px;
+        cursor: pointer;
+        user-select: none;
+    }
+    
+    .tree-label {
+        flex-grow: 1;
+        margin-right: 8px;
+    }
+</style>
+
+@code {
+    private List<PartitionInfo>? partitions;
+    private string selectedPartition = string.Empty;
+    private List<FolderTreeNode>? rootNodes;
+    private bool isLoading = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadPartitionsAsync();
+    }
+
+    private async Task LoadPartitionsAsync()
+    {
+        try
+        {
+            partitions = await PartitionService.GetAvailablePartitionsAsync();
+            if (partitions.Any())
+            {
+                selectedPartition = partitions.First().Path;
+                await LoadTreeAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading partitions");
+            Snackbar.Add("Error loading partitions", Severity.Error);
+        }
+    }
+
+    private async Task LoadTreeAsync()
+    {
+        if (string.IsNullOrEmpty(selectedPartition))
+            return;
+
+        isLoading = true;
+        try
+        {
+            rootNodes = await FolderTreeService.GetRootNodesAsync(selectedPartition);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading folder tree");
+            Snackbar.Add("Error loading folder tree", Severity.Error);
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task OnNodeClick(FolderTreeNode node)
+    {
+        if (!node.HasChildren || node.Children.Any())
+        {
+            node.IsExpanded = !node.IsExpanded;
+            StateHasChanged();
+            return;
+        }
+
+        node.IsLoading = true;
+        StateHasChanged();
+        
+        try
+        {
+            node.Children = await FolderTreeService.GetChildNodesAsync(node.Path, selectedPartition);
+            node.IsExpanded = true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading child folders for: {Path}", node.Path);
+            Snackbar.Add($"Error loading folders: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            node.IsLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OnDepthChange((FolderTreeNode node, int? depth) args)
+    {
+        try
+        {
+            await FolderTreeService.SetFolderDepthOverrideAsync(selectedPartition, args.node.Path, args.depth);
+            args.node.OverrideDepth = args.depth;
+            Snackbar.Add($"Updated depth for {args.node.DisplayName}", Severity.Success);
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error setting depth override");
+            Snackbar.Add("Error updating folder depth", Severity.Error);
+        }
+    }
+
+    private string FormatBytes(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB", "TB" };
+        int order = 0;
+        double size = bytes;
+        while (size >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            size /= 1024;
+        }
+        return $"{size:0.##} {sizes[order]}";
+    }
+}

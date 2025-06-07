@@ -1,0 +1,213 @@
+@page "/reports"
+@rendermode InteractiveServer
+@using System.IO
+@inject IWebHostEnvironment Environment
+@inject IJSRuntime JS
+@inject ILogger<Reports> Logger
+
+<PageTitle>Reports - Tree Size Tracker</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Reports</MudText>
+
+<MudCard>
+    <MudCardContent>
+        <MudText Typo="Typo.h6" Class="mb-3">Generated Reports</MudText>
+        
+        @if (reportFiles != null && reportFiles.Any())
+        {
+            <MudTable Items="@reportFiles" Hover="true" Dense="true">
+                <HeaderContent>
+                    <MudTh>Report Name</MudTh>
+                    <MudTh>Type</MudTh>
+                    <MudTh>Generated Date</MudTh>
+                    <MudTh>File Size</MudTh>
+                    <MudTh>Actions</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Report Name">@context.FileName</MudTd>
+                    <MudTd DataLabel="Type">
+                        <MudChip T="string" Size="Size.Small" Color="@GetFileTypeColor(context.Extension)">
+                            @context.Extension.ToUpper()
+                        </MudChip>
+                    </MudTd>
+                    <MudTd DataLabel="Generated Date">@context.CreatedDate.ToString("g")</MudTd>
+                    <MudTd DataLabel="File Size">@FormatBytes(context.FileSize)</MudTd>
+                    <MudTd DataLabel="Actions">
+                        <MudIconButton Icon="@Icons.Material.Filled.Download" 
+                                     Color="Color.Primary" 
+                                     Size="Size.Small"
+                                     OnClick="@(() => DownloadReport(context))"
+                                     title="Download" />
+                        @if (context.Extension == ".txt")
+                        {
+                            <MudIconButton Icon="@Icons.Material.Filled.Preview" 
+                                         Color="Color.Info" 
+                                         Size="Size.Small"
+                                         OnClick="@(() => PreviewReport(context))"
+                                         title="Preview" />
+                        }
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete" 
+                                     Color="Color.Error" 
+                                     Size="Size.Small"
+                                     OnClick="@(() => DeleteReport(context))"
+                                     title="Delete" />
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        }
+        else
+        {
+            <MudAlert Severity="Severity.Info">
+                No reports have been generated yet. Reports will be created automatically after scheduled scans or when you run a manual scan.
+            </MudAlert>
+        }
+    </MudCardContent>
+</MudCard>
+
+<MudDialog @bind-Visible="showPreview">
+    <DialogContent>
+        <MudText Typo="Typo.h6" Class="mb-3">@previewFileName</MudText>
+        <div style="max-height: 500px; overflow-y: auto;">
+            <pre style="font-size: 0.875rem;">@previewContent</pre>
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="ClosePreview">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private List<ReportFileInfo>? reportFiles;
+    private bool showPreview = false;
+    private string previewContent = "";
+    private string previewFileName = "";
+
+    protected override Task OnInitializedAsync()
+    {
+        LoadReportFiles();
+        return Task.CompletedTask;
+    }
+
+    private Task LoadReportFiles()
+    {
+        try
+        {
+            var reportsDir = Path.Combine(Environment.ContentRootPath, "Reports");
+            
+            if (!Directory.Exists(reportsDir))
+            {
+                reportFiles = new List<ReportFileInfo>();
+                return Task.CompletedTask;
+            }
+
+            var files = Directory.GetFiles(reportsDir, "size-diff-*.*")
+                .Where(f => f.EndsWith(".csv") || f.EndsWith(".txt"));
+
+            reportFiles = files.Select(f => new FileInfo(f))
+                .Select(fi => new ReportFileInfo
+                {
+                    FilePath = fi.FullName,
+                    FileName = fi.Name,
+                    Extension = fi.Extension.ToLower(),
+                    CreatedDate = fi.CreationTime,
+                    FileSize = fi.Length
+                })
+                .OrderByDescending(r => r.CreatedDate)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading report files");
+            reportFiles = new List<ReportFileInfo>();
+        }
+        
+        return Task.CompletedTask;
+    }
+
+    private async Task DownloadReport(ReportFileInfo report)
+    {
+        try
+        {
+            var bytes = await File.ReadAllBytesAsync(report.FilePath);
+            var base64 = Convert.ToBase64String(bytes);
+            var mimeType = report.Extension == ".csv" ? "text/csv" : "text/plain";
+            
+            await JS.InvokeVoidAsync("downloadFile", report.FileName, base64, mimeType);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error downloading report");
+        }
+    }
+
+    private async Task PreviewReport(ReportFileInfo report)
+    {
+        try
+        {
+            previewContent = await File.ReadAllTextAsync(report.FilePath);
+            previewFileName = report.FileName;
+            showPreview = true;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error previewing report");
+        }
+    }
+
+    private Task DeleteReport(ReportFileInfo report)
+    {
+        try
+        {
+            File.Delete(report.FilePath);
+            LoadReportFiles();
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error deleting report");
+        }
+        
+        return Task.CompletedTask;
+    }
+
+    private void ClosePreview()
+    {
+        showPreview = false;
+        StateHasChanged();
+    }
+
+    private Color GetFileTypeColor(string extension)
+    {
+        return extension switch
+        {
+            ".csv" => Color.Success,
+            ".txt" => Color.Info,
+            _ => Color.Default
+        };
+    }
+
+    private string FormatBytes(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB" };
+        double len = bytes;
+        int order = 0;
+        
+        while (len >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            len = len / 1024;
+        }
+
+        return $"{len:F2} {sizes[order]}";
+    }
+
+    private class ReportFileInfo
+    {
+        public string FilePath { get; set; } = "";
+        public string FileName { get; set; } = "";
+        public string Extension { get; set; } = "";
+        public DateTime CreatedDate { get; set; }
+        public long FileSize { get; set; }
+    }
+}
