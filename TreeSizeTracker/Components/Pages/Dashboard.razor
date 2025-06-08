@@ -3,10 +3,13 @@
 @using TreeSizeTracker.Data
 @using TreeSizeTracker.Models
 @using TreeSizeTracker.Services
-@inject TreeSizeDbContext DbContext
+@inject AppStateService AppState
+@inject TreeSizeDbContextFactory DbContextFactory
 @inject FileScannerService ScannerService
 @inject ReportingService ReportingService
+@inject ConfigurationService ConfigService
 @inject ILogger<Dashboard> Logger
+@implements IDisposable
 
 <PageTitle>Dashboard - Tree Size Tracker</PageTitle>
 
@@ -148,27 +151,39 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadDashboardData();
+        AppState.OnPartitionChanged += OnPartitionChanged;
+    }
+
+    private async void OnPartitionChanged()
+    {
+        await LoadDashboardData();
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task LoadDashboardData()
     {
         try
         {
+            if (string.IsNullOrEmpty(AppState.SelectedPartition))
+                return;
+
+            using var dbContext = DbContextFactory.CreateContext(AppState.SelectedPartition);
+            
             // Get total folders being tracked
-            var paths = await DbContext.FolderSizes
+            var paths = await dbContext.FolderSizes
                 .Select(f => f.Path)
                 .Distinct()
                 .ToListAsync();
             totalFolders = paths.Count;
 
             // Get last scan time
-            lastScanTime = await DbContext.FolderSizes
+            lastScanTime = await dbContext.FolderSizes
                 .MaxAsync(f => (DateTime?)f.ScanDateTime);
 
             if (lastScanTime.HasValue)
             {
                 // Get total size from most recent scan
-                var latestScanData = await DbContext.FolderSizes
+                var latestScanData = await dbContext.FolderSizes
                     .Where(f => f.ScanDateTime == lastScanTime.Value)
                     .ToListAsync();
                 
@@ -257,5 +272,10 @@
     {
         if (maxFolderSize == 0) return 0;
         return (double)size / maxFolderSize * 100;
+    }
+
+    public void Dispose()
+    {
+        AppState.OnPartitionChanged -= OnPartitionChanged;
     }
 }

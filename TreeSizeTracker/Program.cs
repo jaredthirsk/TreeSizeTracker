@@ -23,6 +23,7 @@ builder.Services.AddSingleton<TreeSizeDbContextFactory>();
 
 // Add application services
 builder.Services.AddSingleton<ConfigurationService>();
+builder.Services.AddScoped<AppStateService>();
 builder.Services.AddScoped<FileScannerService>();
 builder.Services.AddScoped<ReportingService>();
 builder.Services.AddScoped<PartitionService>();

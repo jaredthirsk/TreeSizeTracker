@@ -1,44 +1,36 @@
 @page "/tree-configurator"
 @using TreeSizeTracker.Services
 @using TreeSizeTracker.Models
+@inject AppStateService AppState
 @inject FolderTreeService FolderTreeService
 @inject PartitionService PartitionService
 @inject ISnackbar Snackbar
 @inject ILogger<TreeConfigurator> Logger
 @rendermode InteractiveServer
+@implements IDisposable
 
 <PageTitle>Tree Configurator</PageTitle>
 
 <MudText Typo="Typo.h4" Class="mb-4">Tree Configurator</MudText>
 
-@if (partitions == null)
-{
-    <MudProgressCircular Indeterminate="true" />
-}
-else if (!partitions.Any())
-{
-    <MudAlert Severity="Severity.Warning">No partitions found on this system.</MudAlert>
-}
-else
+@if (currentPartition != null)
 {
     <MudCard Class="mb-4">
         <MudCardContent>
             <MudGrid>
-                <MudItem xs="12" md="6">
-                    <MudSelect T="string" Value="selectedPartition" Label="Select Partition/Drive" Variant="Variant.Outlined"
-                               ValueChanged="@(async (string value) => { selectedPartition = value; await LoadTreeAsync(); })">
-                        @foreach (var partition in partitions)
-                        {
-                            <MudSelectItem Value="@partition.Path">
-                                @partition.Label - @FormatBytes(partition.TotalSize - partition.UsedSpace) free of @FormatBytes(partition.TotalSize)
-                            </MudSelectItem>
-                        }
-                    </MudSelect>
-                </MudItem>
-                <MudItem xs="12" md="6" Class="d-flex align-center">
-                    <MudText Typo="Typo.body2">
-                        Configure scan depth for individual folders. Default means no override.
-                    </MudText>
+                <MudItem xs="12">
+                    <div class="d-flex align-center justify-space-between">
+                        <div>
+                            <MudText Typo="Typo.h6">@currentPartition.Label</MudText>
+                            <MudText Typo="Typo.body2" Class="mt-1">
+                                @FormatBytes(currentPartition.FreeSpace) free of @FormatBytes(currentPartition.TotalSize) 
+                                (@currentPartition.FreePercentage.ToString("F1")% free)
+                            </MudText>
+                        </div>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">
+                            Configure scan depth for individual folders. Default means no override.
+                        </MudText>
+                    </div>
                 </MudItem>
             </MudGrid>
         </MudCardContent>
@@ -144,31 +136,29 @@ else
 </style>
 
 @code {
-    private List<PartitionInfo>? partitions;
-    private string selectedPartition = string.Empty;
+    private PartitionInfo? currentPartition;
+    private string selectedPartition => AppState.SelectedPartition ?? "";
     private List<FolderTreeNode>? rootNodes;
     private bool isLoading = false;
 
     protected override async Task OnInitializedAsync()
     {
-        await LoadPartitionsAsync();
+        if (!string.IsNullOrEmpty(AppState.SelectedPartition))
+        {
+            currentPartition = AppState.Partitions?.FirstOrDefault(p => p.Path == AppState.SelectedPartition);
+            await LoadTreeAsync();
+        }
+        
+        AppState.OnPartitionChanged += OnPartitionChanged;
     }
 
-    private async Task LoadPartitionsAsync()
+    private async void OnPartitionChanged()
     {
-        try
+        if (!string.IsNullOrEmpty(AppState.SelectedPartition))
         {
-            partitions = await PartitionService.GetAvailablePartitionsAsync();
-            if (partitions.Any())
-            {
-                selectedPartition = partitions.First().Path;
-                await LoadTreeAsync();
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.LogError(ex, "Error loading partitions");
-            Snackbar.Add("Error loading partitions", Severity.Error);
+            currentPartition = AppState.Partitions?.FirstOrDefault(p => p.Path == AppState.SelectedPartition);
+            await LoadTreeAsync();
+            await InvokeAsync(StateHasChanged);
         }
     }
 
@@ -249,5 +239,10 @@ else
             size /= 1024;
         }
         return $"{size:0.##} {sizes[order]}";
+    }
+
+    public void Dispose()
+    {
+        AppState.OnPartitionChanged -= OnPartitionChanged;
     }
 }

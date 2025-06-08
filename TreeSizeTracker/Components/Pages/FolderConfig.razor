@@ -1,6 +1,7 @@
 @page "/folder-config"
 @using TreeSizeTracker.Models
 @using TreeSizeTracker.Services
+@inject AppStateService AppState
 @inject ConfigurationService ConfigService
 @inject FileScannerService ScannerService
 @inject PartitionService PartitionService
@@ -15,50 +16,30 @@
 
 <MudText Typo="Typo.h4" Class="mb-4">Folder Configuration</MudText>
 
-@if (partitions != null && partitions.Any())
+@if (currentPartition != null)
 {
     <MudCard Class="mb-4">
         <MudCardContent>
             <MudGrid>
-                <MudItem xs="12" md="6">
-                    <MudSelect T="string" @bind-Value="selectedPartition" Label="Select Partition/Drive" Variant="Variant.Outlined"
-                               @bind-Value:after="@(() => OnPartitionChanged(selectedPartition))">
-                        @foreach (var partition in partitions)
-                        {
-                            <MudSelectItem Value="@partition.Path">
-                                <div class="d-flex align-center">
-                                    <MudIcon Icon="@Icons.Material.Filled.Storage" Class="mr-2" />
-                                    <div class="flex-grow-1">
-                                        <MudText>@partition.Label</MudText>
-                                        <MudText Typo="Typo.caption">
-                                            @FormatBytes(partition.UsedSpace) / @FormatBytes(partition.TotalSize) 
-                                            (@partition.UsagePercentage.ToString("F1")% used)
-                                        </MudText>
-                                    </div>
-                                </div>
-                            </MudSelectItem>
-                        }
-                    </MudSelect>
-                </MudItem>
-                <MudItem xs="12" md="6">
-                    @if (!string.IsNullOrEmpty(selectedPartition))
-                    {
-                        var partition = partitions.FirstOrDefault(p => p.Path == selectedPartition);
-                        if (partition != null)
-                        {
-                            <MudGrid>
-                                <MudItem xs="12">
-                                    <MudProgressLinear Value="@partition.UsagePercentage" Color="@GetUsageColor(partition.UsagePercentage)" />
-                                </MudItem>
-                                <MudItem xs="6">
-                                    <MudText Typo="Typo.caption">File System: @partition.FileSystem</MudText>
-                                </MudItem>
-                                <MudItem xs="6" Class="text-right">
-                                    <MudText Typo="Typo.caption">Free: @FormatBytes(partition.AvailableSpace)</MudText>
-                                </MudItem>
-                            </MudGrid>
-                        }
-                    }
+                <MudItem xs="12">
+                    <div class="d-flex align-center mb-2">
+                        <MudIcon Icon="@Icons.Material.Filled.Storage" Class="mr-2" />
+                        <MudText Typo="Typo.h6">@currentPartition.Label</MudText>
+                    </div>
+                    <MudProgressLinear Value="@(100 - currentPartition.FreePercentage)" Color="@GetUsageColor(100 - currentPartition.FreePercentage)" />
+                    <MudGrid Class="mt-2">
+                        <MudItem xs="4">
+                            <MudText Typo="Typo.caption">File System: @currentPartition.FileSystem</MudText>
+                        </MudItem>
+                        <MudItem xs="4" Class="text-center">
+                            <MudText Typo="Typo.caption">
+                                @FormatBytes(currentPartition.FreeSpace) / @FormatBytes(currentPartition.TotalSize) free
+                            </MudText>
+                        </MudItem>
+                        <MudItem xs="4" Class="text-right">
+                            <MudText Typo="Typo.caption">@currentPartition.FreePercentage.ToString("F1")% free</MudText>
+                        </MudItem>
+                    </MudGrid>
                 </MudItem>
             </MudGrid>
         </MudCardContent>
@@ -410,8 +391,8 @@ else
 }
 
 @code {
-    private List<PartitionInfo>? partitions;
-    private string selectedPartition = "";
+    private PartitionInfo? currentPartition;
+    private string selectedPartition => AppState.SelectedPartition ?? "";
     private ScanConfiguration? configuration;
     private GlobalConfiguration? globalConfig;
     private string newRootPath = "";
@@ -427,24 +408,28 @@ else
     private System.Threading.Timer? progressTimer;
     private ScanProgress? scanProgress;
 
-    protected override async Task OnInitializedAsync()
+    protected override Task OnInitializedAsync()
     {
         globalConfig = ConfigService.GetGlobalConfiguration();
-        partitions = await PartitionService.GetAvailablePartitionsAsync();
         
-        if (partitions.Any())
+        if (!string.IsNullOrEmpty(AppState.SelectedPartition))
         {
-            selectedPartition = partitions.First().Path;
-            configuration = ConfigService.GetPartitionConfiguration(selectedPartition);
+            currentPartition = AppState.Partitions?.FirstOrDefault(p => p.Path == AppState.SelectedPartition);
+            configuration = ConfigService.GetPartitionConfiguration(AppState.SelectedPartition);
         }
+        
+        AppState.OnPartitionChanged += OnPartitionChanged;
+        return Task.CompletedTask;
     }
 
-    private Task OnPartitionChanged(string newPartition)
+    private void OnPartitionChanged()
     {
-        selectedPartition = newPartition;
-        configuration = ConfigService.GetPartitionConfiguration(selectedPartition);
-        StateHasChanged();
-        return Task.CompletedTask;
+        if (!string.IsNullOrEmpty(AppState.SelectedPartition))
+        {
+            currentPartition = AppState.Partitions?.FirstOrDefault(p => p.Path == AppState.SelectedPartition);
+            configuration = ConfigService.GetPartitionConfiguration(AppState.SelectedPartition);
+            InvokeAsync(StateHasChanged);
+        }
     }
 
     private async Task SaveConfiguration()
@@ -690,5 +675,6 @@ else
     public void Dispose()
     {
         progressTimer?.Dispose();
+        AppState.OnPartitionChanged -= OnPartitionChanged;
     }
 }

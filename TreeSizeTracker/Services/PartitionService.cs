@@ -12,7 +12,7 @@ public class PartitionService
         _logger = logger;
     }
 
-    public async Task<List<PartitionInfo>> GetAvailablePartitionsAsync()
+    public async Task<List<PartitionInfo>> GetPartitionsAsync()
     {
         var partitions = new List<PartitionInfo>();
 
@@ -177,8 +177,10 @@ public class PartitionInfo
     public string Label { get; set; } = string.Empty;
     public long TotalSize { get; set; }
     public long AvailableSpace { get; set; }
+    public long FreeSpace => AvailableSpace;
     public long UsedSpace => TotalSize - AvailableSpace;
     public double UsagePercentage => TotalSize > 0 ? (double)UsedSpace / TotalSize * 100 : 0;
+    public double FreePercentage => TotalSize > 0 ? (double)AvailableSpace / TotalSize * 100 : 0;
     public string FileSystem { get; set; } = string.Empty;
     public string DriveType { get; set; } = string.Empty;
     public string Device { get; set; } = string.Empty;

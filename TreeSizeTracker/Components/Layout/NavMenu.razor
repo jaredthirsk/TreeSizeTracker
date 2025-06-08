@@ -1,24 +1,98 @@
-<MudNavMenu>
-    <MudText Typo="Typo.h6" Class="px-4 my-3">Navigation</MudText>
-    <MudDivider Class="mb-2" />
+@using TreeSizeTracker.Services
+@using TreeSizeTracker.Models
+@inject AppStateService AppState
+@inject PartitionService PartitionService
+@implements IDisposable
+
+<div class="d-flex flex-column" style="height: 100%;">
+    <MudNavMenu Class="flex-grow-1">
+        <MudText Typo="Typo.h6" Class="px-4 my-3">Navigation</MudText>
+        <MudDivider Class="mb-2" />
+        
+        <MudNavLink Href="" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.Dashboard">
+            Dashboard
+        </MudNavLink>
+        
+        <MudNavLink Href="folder-config" Icon="@Icons.Material.Filled.FolderOpen">
+            Folder Configuration
+        </MudNavLink>
+        
+        <MudNavLink Href="tree-configurator" Icon="@Icons.Material.Filled.AccountTree">
+            Tree Configurator
+        </MudNavLink>
+        
+        <MudNavLink Href="reports" Icon="@Icons.Material.Filled.Assessment">
+            Reports
+        </MudNavLink>
+        
+        <MudNavLink Href="scan-history" Icon="@Icons.Material.Filled.History">
+            Scan History
+        </MudNavLink>
+    </MudNavMenu>
     
-    <MudNavLink Href="" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.Dashboard">
-        Dashboard
-    </MudNavLink>
+    <MudDivider Class="my-2" />
     
-    <MudNavLink Href="folder-config" Icon="@Icons.Material.Filled.FolderOpen">
-        Folder Configuration
-    </MudNavLink>
-    
-    <MudNavLink Href="tree-configurator" Icon="@Icons.Material.Filled.AccountTree">
-        Tree Configurator
-    </MudNavLink>
-    
-    <MudNavLink Href="reports" Icon="@Icons.Material.Filled.Assessment">
-        Reports
-    </MudNavLink>
-    
-    <MudNavLink Href="scan-history" Icon="@Icons.Material.Filled.History">
-        Scan History
-    </MudNavLink>
-</MudNavMenu>
+    @if (partitions != null && partitions.Any())
+    {
+        <div class="px-3 pb-3">
+            <MudText Typo="Typo.caption" Class="mb-2">Selected Partition</MudText>
+            <MudSelect T="string" @bind-Value="selectedPartition" Dense="true" Variant="Variant.Outlined"
+                       @bind-Value:after="OnPartitionChanged">
+                @foreach (var partition in partitions)
+                {
+                    <MudSelectItem Value="@partition.Path">
+                        <div class="d-flex align-center">
+                            <MudIcon Icon="@Icons.Material.Filled.Storage" Size="Size.Small" Class="mr-2" />
+                            <div class="flex-grow-1">
+                                <MudText Typo="Typo.body2">@partition.Label</MudText>
+                                <MudText Typo="Typo.caption">
+                                    @FormatBytes(partition.FreeSpace) / @FormatBytes(partition.TotalSize) free
+                                    (@((100 - partition.UsagePercentage).ToString("F1"))% free)
+                                </MudText>
+                            </div>
+                        </div>
+                    </MudSelectItem>
+                }
+            </MudSelect>
+        </div>
+    }
+</div>
+
+@code {
+    private List<PartitionInfo>? partitions;
+    private string? selectedPartition;
+
+    protected override async Task OnInitializedAsync()
+    {
+        partitions = await PartitionService.GetPartitionsAsync();
+        AppState.SetPartitions(partitions);
+        selectedPartition = AppState.SelectedPartition;
+        
+        AppState.OnPartitionChanged += StateHasChanged;
+    }
+
+    private void OnPartitionChanged()
+    {
+        AppState.SelectedPartition = selectedPartition;
+    }
+
+    private string FormatBytes(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB", "TB" };
+        double len = bytes;
+        int order = 0;
+        
+        while (len >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            len = len / 1024;
+        }
+
+        return $"{len:F1} {sizes[order]}";
+    }
+
+    public void Dispose()
+    {
+        AppState.OnPartitionChanged -= StateHasChanged;
+    }
+}
