@@ -7,16 +7,16 @@ namespace TreeSizeTracker.Services;
 
 public class DatabaseCleanupService
 {
-    private readonly TreeSizeDbContext _dbContext;
+    private readonly TreeSizeDbContextFactory _dbContextFactory;
     private readonly ConfigurationService _configService;
     private readonly ILogger<DatabaseCleanupService> _logger;
 
     public DatabaseCleanupService(
-        TreeSizeDbContext dbContext,
+        TreeSizeDbContextFactory dbContextFactory,
         ConfigurationService configService,
         ILogger<DatabaseCleanupService> logger)
     {
-        _dbContext = dbContext;
+        _dbContextFactory = dbContextFactory;
         _configService = configService;
         _logger = logger;
     }
@@ -54,18 +54,13 @@ public class DatabaseCleanupService
             await CleanupPartitionAsync(configuration, result);
         }
 
-        // Save changes
-        if (result.TotalEntriesRemoved > 0)
-        {
-            await _dbContext.SaveChangesAsync();
-            _logger.LogInformation("Database cleanup completed. Removed {Count} entries", result.TotalEntriesRemoved);
-        }
-
         return result;
     }
 
     private async Task CleanupPartitionAsync(ScanConfiguration configuration, CleanupResult result)
     {
+        using var dbContext = _dbContextFactory.CreateContext(configuration.PartitionPath);
+        
         // Build depth map for all paths based on current configuration
         var depthMap = new Dictionary<string, int>();
         
@@ -86,10 +81,8 @@ public class DatabaseCleanupService
             }
         }
 
-        // Get all database entries for paths under this partition
-        var allEntries = await _dbContext.FolderSizes
-            .Where(f => f.Path.StartsWith(configuration.PartitionPath))
-            .ToListAsync();
+        // Get all database entries for this partition
+        var allEntries = await dbContext.FolderSizes.ToListAsync();
 
         // Group by scan date to process each scan separately
         var scanGroups = allEntries.GroupBy(e => e.ScanDateTime).ToList();
@@ -164,12 +157,19 @@ public class DatabaseCleanupService
             // Remove entries that exceed depth
             if (entriesToRemove.Any())
             {
-                _dbContext.FolderSizes.RemoveRange(entriesToRemove);
+                dbContext.FolderSizes.RemoveRange(entriesToRemove);
                 result.TotalEntriesRemoved += entriesToRemove.Count;
                 
-                _logger.LogInformation("Removing {Count} entries from scan date {Date}", 
-                    entriesToRemove.Count, scanGroup.Key);
+                _logger.LogInformation("Removing {Count} entries from partition {Partition} scan date {Date}", 
+                    entriesToRemove.Count, configuration.PartitionPath, scanGroup.Key);
             }
+        }
+        
+        // Save changes for this partition
+        if (result.TotalEntriesRemoved > 0)
+        {
+            await dbContext.SaveChangesAsync();
+            _logger.LogInformation("Database cleanup completed for partition {Partition}", configuration.PartitionPath);
         }
     }
 }

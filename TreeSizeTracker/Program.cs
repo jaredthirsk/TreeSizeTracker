@@ -1,6 +1,5 @@
 using Microsoft.EntityFrameworkCore;
 using MudBlazor.Services;
-using TreeSizeTracker.Components;
 using TreeSizeTracker.Data;
 using TreeSizeTracker.Services;
 
@@ -13,9 +12,14 @@ builder.Services.AddRazorComponents()
 // Add MudBlazor services
 builder.Services.AddMudServices();
 
-// Add Entity Framework with SQLite
-builder.Services.AddDbContext<TreeSizeDbContext>(options =>
-    options.UseSqlite($"Data Source={Path.Combine(builder.Environment.ContentRootPath, "treesize.db")}"));
+// Add data directory service first and perform migration immediately
+var dataDirectoryService = new DataDirectoryService(new Microsoft.Extensions.Logging.Abstractions.NullLogger<DataDirectoryService>());
+dataDirectoryService.MigrateOldData(builder.Environment);
+dataDirectoryService.CleanupSqliteTemporaryFiles();
+builder.Services.AddSingleton(dataDirectoryService);
+
+// Add Entity Framework factory for per-partition databases
+builder.Services.AddSingleton<TreeSizeDbContextFactory>();
 
 // Add application services
 builder.Services.AddSingleton<ConfigurationService>();
@@ -42,47 +46,18 @@ app.UseHttpsRedirection();
 app.UseAntiforgery();
 
 app.MapStaticAssets();
-app.MapRazorComponents<App>()
+app.MapRazorComponents<TreeSizeTracker.Components.App>()
     .AddInteractiveServerRenderMode();
 
-// Ensure database is created and handle schema updates
-using (var scope = app.Services.CreateScope())
+// Data migration was already performed during service registration
+
+// Add graceful shutdown handling for database connections
+var applicationLifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
+applicationLifetime.ApplicationStopping.Register(() =>
 {
-    var dbContext = scope.ServiceProvider.GetRequiredService<TreeSizeDbContext>();
-    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-    
-    try
-    {
-        // For development: Check if we need to recreate the database
-        var dbPath = Path.Combine(builder.Environment.ContentRootPath, "treesize.db");
-        bool needsRecreation = false;
-        
-        if (File.Exists(dbPath))
-        {
-            try
-            {
-                // Try to query the database to check if schema is correct
-                var test = dbContext.FolderSizes.Take(1).ToList();
-            }
-            catch (Exception)
-            {
-                needsRecreation = true;
-                logger.LogWarning("Database schema appears to be outdated, will recreate");
-            }
-        }
-        
-        if (needsRecreation)
-        {
-            dbContext.Database.EnsureDeleted();
-        }
-        
-        dbContext.Database.EnsureCreated();
-        logger.LogInformation("Database ready");
-    }
-    catch (Exception ex)
-    {
-        logger.LogError(ex, "Error creating database");
-    }
-}
+    using var scope = app.Services.CreateScope();
+    var dbContextFactory = scope.ServiceProvider.GetRequiredService<TreeSizeDbContextFactory>();
+    dbContextFactory.Dispose();
+});
 
 app.Run();

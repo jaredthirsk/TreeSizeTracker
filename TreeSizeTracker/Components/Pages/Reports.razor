@@ -1,6 +1,7 @@
 @page "/reports"
 @using System.IO
-@inject IWebHostEnvironment Environment
+@using TreeSizeTracker.Services
+@inject DataDirectoryService DataDirectoryService
 @inject IJSRuntime JS
 @inject ILogger<Reports> Logger
 @rendermode InteractiveServer
@@ -92,7 +93,7 @@
     {
         try
         {
-            var reportsDir = Path.Combine(Environment.ContentRootPath, "Reports");
+            var reportsDir = DataDirectoryService.ReportsDirectory;
             
             if (!Directory.Exists(reportsDir))
             {

@@ -6,13 +6,13 @@ namespace TreeSizeTracker.Services;
 
 public class ConfigurationService
 {
-    private readonly string _configPath;
+    private readonly DataDirectoryService _dataDirectoryService;
     private GlobalConfiguration _configuration;
     private readonly ILogger<ConfigurationService> _logger;
 
-    public ConfigurationService(IWebHostEnvironment environment, ILogger<ConfigurationService> logger)
+    public ConfigurationService(DataDirectoryService dataDirectoryService, ILogger<ConfigurationService> logger)
     {
-        _configPath = Path.Combine(environment.ContentRootPath, "scan-config.json");
+        _dataDirectoryService = dataDirectoryService;
         _logger = logger;
         _configuration = LoadConfiguration();
     }
@@ -41,7 +41,7 @@ public class ConfigurationService
             { 
                 WriteIndented = true 
             });
-            await File.WriteAllTextAsync(_configPath, json);
+            await File.WriteAllTextAsync(_dataDirectoryService.ConfigFilePath, json);
         }
         catch (Exception ex)
         {
@@ -57,11 +57,11 @@ public class ConfigurationService
 
     private GlobalConfiguration LoadConfiguration()
     {
-        if (File.Exists(_configPath))
+        if (File.Exists(_dataDirectoryService.ConfigFilePath))
         {
             try
             {
-                var json = File.ReadAllText(_configPath);
+                var json = File.ReadAllText(_dataDirectoryService.ConfigFilePath);
                 return JsonSerializer.Deserialize<GlobalConfiguration>(json) ?? GetDefaultGlobalConfiguration();
             }
             catch (Exception ex)

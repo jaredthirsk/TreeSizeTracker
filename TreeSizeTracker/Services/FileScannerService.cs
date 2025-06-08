@@ -7,7 +7,7 @@ namespace TreeSizeTracker.Services;
 
 public class FileScannerService
 {
-    private readonly TreeSizeDbContext _dbContext;
+    private readonly TreeSizeDbContextFactory _dbContextFactory;
     private readonly ConfigurationService _configService;
     private readonly ILogger<FileScannerService> _logger;
     private List<ExclusionRule> _activeExclusions = new();
@@ -17,11 +17,11 @@ public class FileScannerService
     private ScanProgress _currentProgress = new();
 
     public FileScannerService(
-        TreeSizeDbContext dbContext, 
+        TreeSizeDbContextFactory dbContextFactory, 
         ConfigurationService configService,
         ILogger<FileScannerService> logger)
     {
-        _dbContext = dbContext;
+        _dbContextFactory = dbContextFactory;
         _configService = configService;
         _logger = logger;
     }
@@ -74,13 +74,6 @@ public class FileScannerService
             scanResults.AddRange(partitionResults);
         }
 
-        // Save all results to database
-        if (scanResults.Any())
-        {
-            _dbContext.FolderSizes.AddRange(scanResults);
-            await _dbContext.SaveChangesAsync();
-        }
-
         // Mark scanning as complete
         _currentProgress.IsScanning = false;
 
@@ -91,6 +84,9 @@ public class FileScannerService
     {
         var scanResults = new List<FolderSizeData>();
         const int batchSize = 1000; // Save to database every 1000 records
+        
+        // Create database context for this partition
+        using var dbContext = _dbContextFactory.CreateContext(configuration.PartitionPath);
         
         // Clear the scanned paths set for this scan
         _scannedPaths.Clear();
@@ -145,9 +141,9 @@ public class FileScannerService
                 // Save batch if we've accumulated enough records
                 if (scanResults.Count >= batchSize)
                 {
-                    _dbContext.FolderSizes.AddRange(scanResults);
-                    await _dbContext.SaveChangesAsync();
-                    _logger.LogInformation("Saved batch of {Count} records", scanResults.Count);
+                    dbContext.FolderSizes.AddRange(scanResults);
+                    await dbContext.SaveChangesAsync();
+                    _logger.LogInformation("Saved batch of {Count} records to partition {Partition}", scanResults.Count, configuration.PartitionPath);
                     scanResults.Clear(); // Clear the list to free memory
                     
                     // Also periodically clear the scanned paths to avoid memory bloat
@@ -167,6 +163,14 @@ public class FileScannerService
             {
                 _logger.LogError(ex, "Error scanning root folder: {FolderPath}", rootFolder.Path);
             }
+        }
+
+        // Save any remaining results
+        if (scanResults.Any())
+        {
+            dbContext.FolderSizes.AddRange(scanResults);
+            await dbContext.SaveChangesAsync();
+            _logger.LogInformation("Saved final batch of {Count} records to partition {Partition}", scanResults.Count, configuration.PartitionPath);
         }
 
         return scanResults;
@@ -212,27 +216,34 @@ public class FileScannerService
             _currentProgress.DirectoriesScanned++;
             _currentProgress.CurrentDirectory = path;
 
-            // Determine if we should aggregate subdirectories
-            bool shouldAggregate = currentDepth >= effectiveMaxDepth;
+            // Determine if we should store this entry in the database
+            bool shouldStoreEntry = currentDepth <= effectiveMaxDepth;
             
-            // Get folder size - aggregate recursively if at depth limit
-            var folderSize = shouldAggregate 
-                ? await GetFolderSizeRecursiveAsync(path)
-                : await GetFolderSizeAsync(path);
+            // Determine if we're at the depth limit (need to aggregate everything below)
+            bool atDepthLimit = currentDepth == effectiveMaxDepth;
             
-            results.Add(new FolderSizeData
+            long totalSize = 0;
+            int totalFileCount = 0;
+            int subfolderCount = 0;
+            
+            // Get immediate folder stats (files in current directory only)
+            var immediateStats = await GetFolderSizeAsync(path);
+            totalSize = immediateStats.sizeInBytes;
+            totalFileCount = immediateStats.fileCount;
+            subfolderCount = immediateStats.subfolderCount;
+            
+            // Process subdirectories
+            if (atDepthLimit)
             {
-                // Don't set Id - let database auto-generate it
-                Path = path,
-                SizeInBytes = folderSize.sizeInBytes,
-                FileCount = folderSize.fileCount,
-                SubfolderCount = folderSize.subfolderCount,
-                ScanDateTime = scanTime
-            });
-
-            // Recursively scan subfolders if within depth limit
-            if (!shouldAggregate)
+                // We're at the depth limit - aggregate all subdirectories recursively
+                var aggregatedStats = await GetFolderSizeRecursiveAsync(path);
+                totalSize = aggregatedStats.sizeInBytes;
+                totalFileCount = aggregatedStats.fileCount;
+                subfolderCount = aggregatedStats.subfolderCount;
+            }
+            else
             {
+                // Continue scanning subdirectories individually
                 try
                 {
                     var subdirectories = Directory.GetDirectories(path);
@@ -246,15 +257,39 @@ public class FileScannerService
                             continue;
                         }
 
+                        // Recursively scan subdirectory
                         var subdirResults = await ScanFolderRecursiveAsync(
                             subdir, scanTime, currentDepth + 1, effectiveMaxDepth);
+                        
+                        // Add subdirectory results to our results
                         results.AddRange(subdirResults);
+                        
+                        // Add immediate subdirectory sizes to our total
+                        var immediateChild = subdirResults.FirstOrDefault(r => r.Path == subdir);
+                        if (immediateChild != null)
+                        {
+                            totalSize += immediateChild.SizeInBytes;
+                            totalFileCount += immediateChild.FileCount;
+                        }
                     }
                 }
                 catch (UnauthorizedAccessException)
                 {
                     _logger.LogDebug("Access denied to subfolders of: {FolderPath}", path);
                 }
+            }
+            
+            // Store entry if within depth limit
+            if (shouldStoreEntry)
+            {
+                results.Add(new FolderSizeData
+                {
+                    Path = path,
+                    SizeInBytes = totalSize,
+                    FileCount = totalFileCount,
+                    SubfolderCount = subfolderCount,
+                    ScanDateTime = scanTime
+                });
             }
         }
         catch (UnauthorizedAccessException)
@@ -425,6 +460,13 @@ public class FileScannerService
                     subfolderCount = subdirs.Length;
                     foreach (var subdir in subdirs)
                     {
+                        // Skip excluded directories
+                        if (ShouldExclude(subdir))
+                        {
+                            _logger.LogDebug("Excluding directory from aggregation: {Path}", subdir);
+                            continue;
+                        }
+                        
                         var dirInfo = new DirectoryInfo(subdir);
                         if ((dirInfo.Attributes & FileAttributes.ReparsePoint) == 0)
                         {
@@ -437,6 +479,13 @@ public class FileScannerService
                     // Just add subdirectories to process
                     foreach (var subdir in Directory.GetDirectories(currentDir))
                     {
+                        // Skip excluded directories
+                        if (ShouldExclude(subdir))
+                        {
+                            _logger.LogDebug("Excluding directory from aggregation: {Path}", subdir);
+                            continue;
+                        }
+                        
                         var dirInfo = new DirectoryInfo(subdir);
                         if ((dirInfo.Attributes & FileAttributes.ReparsePoint) == 0)
                         {
@@ -461,32 +510,41 @@ public class FileScannerService
     public async Task<List<FolderSizeDiff>> GetLatestDiffsAsync()
     {
         var diffs = new List<FolderSizeDiff>();
+        var globalConfig = _configService.GetGlobalConfiguration();
         
-        // Get distinct paths
-        var paths = await _dbContext.FolderSizes
-            .Select(f => f.Path)
-            .Distinct()
-            .ToListAsync();
-
-        foreach (var path in paths)
+        // Iterate through all enabled partitions
+        foreach (var kvp in globalConfig.PartitionConfigurations)
         {
-            // Get the two most recent scans for this path
-            var recentScans = await _dbContext.FolderSizes
-                .Where(f => f.Path == path)
-                .OrderByDescending(f => f.ScanDateTime)
-                .Take(2)
+            if (!kvp.Value.IsEnabled) continue;
+            
+            using var dbContext = _dbContextFactory.CreateContext(kvp.Key);
+            
+            // Get distinct paths for this partition
+            var paths = await dbContext.FolderSizes
+                .Select(f => f.Path)
+                .Distinct()
                 .ToListAsync();
 
-            if (recentScans.Count == 2)
+            foreach (var path in paths)
             {
-                diffs.Add(new FolderSizeDiff
+                // Get the two most recent scans for this path
+                var recentScans = await dbContext.FolderSizes
+                    .Where(f => f.Path == path)
+                    .OrderByDescending(f => f.ScanDateTime)
+                    .Take(2)
+                    .ToListAsync();
+
+                if (recentScans.Count == 2)
                 {
-                    Path = path,
-                    CurrentSize = recentScans[0].SizeInBytes,
-                    PreviousSize = recentScans[1].SizeInBytes,
-                    CurrentScanDate = recentScans[0].ScanDateTime,
-                    PreviousScanDate = recentScans[1].ScanDateTime
-                });
+                    diffs.Add(new FolderSizeDiff
+                    {
+                        Path = path,
+                        CurrentSize = recentScans[0].SizeInBytes,
+                        PreviousSize = recentScans[1].SizeInBytes,
+                        CurrentScanDate = recentScans[0].ScanDateTime,
+                        PreviousScanDate = recentScans[1].ScanDateTime
+                    });
+                }
             }
         }
 

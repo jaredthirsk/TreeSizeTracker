@@ -5,22 +5,19 @@ namespace TreeSizeTracker.Services;
 
 public class ReportingService
 {
-    private readonly IWebHostEnvironment _environment;
+    private readonly DataDirectoryService _dataDirectoryService;
     private readonly ILogger<ReportingService> _logger;
 
-    public ReportingService(IWebHostEnvironment environment, ILogger<ReportingService> logger)
+    public ReportingService(DataDirectoryService dataDirectoryService, ILogger<ReportingService> logger)
     {
-        _environment = environment;
+        _dataDirectoryService = dataDirectoryService;
         _logger = logger;
     }
 
     public async Task GenerateReportsAsync(List<FolderSizeDiff> diffs)
     {
         var reportDate = DateTime.Now;
-        var reportsDir = Path.Combine(_environment.ContentRootPath, "Reports");
-        
-        // Ensure reports directory exists
-        Directory.CreateDirectory(reportsDir);
+        var reportsDir = _dataDirectoryService.ReportsDirectory;
 
         // Generate both CSV and text reports
         await GenerateCsvReportAsync(diffs, reportDate, reportsDir);
